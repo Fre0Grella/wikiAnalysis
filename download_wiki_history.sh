@@ -138,20 +138,17 @@ if [ "$DRY_RUN" -eq 0 ]; then
         echo "Using aria2c for optimized parallel downloading..."
         echo ""
 
-        aria2c \
+            aria2c \
                 --input-file="$URL_FILE" \
                 --dir="$OUTPUT_DIR" \
-                --max-concurrent-downloads=4 \
+                --max-concurrent-downloads=1 \
                 --max-connection-per-server=2 \
                 --min-split-size=20M \
                 --split=2 \
                 --continue=true \
-                --auto-file-renaming=false \
-                --console-log-level=warn \
-                --summary-interval=0 \
-                --max-tries=20 \
+                --max-tries=0 \
                 --retry-wait=10 \
-                --user-agent="WikimediaDumpDownloader/1.0"
+                --user-agent="WikimediaDumpDownloader/1.0 (contact: marco.galeri@studio.unibo.it)"
 
     # Fallback to curl (Sequential but clean progress bar)
     elif command -v curl >/dev/null 2>&1; then
