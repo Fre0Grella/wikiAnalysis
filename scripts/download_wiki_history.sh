@@ -173,7 +173,13 @@ if [ "$DRY_RUN" -eq 0 ]; then
         exit 1
     fi
 
-    echo "All downloads complete."
+    echo "All downloads complete..."
+    echo ""
+    echo "✓ Downloads saved to: $OUTPUT_DIR"
+    echo ""
+    echo "Cleaning up temporary files..."
+    rm -f dataset/wikimedia_dumps/urls_*.txt
+    echo "✓ Cleanup complete."
 else
     echo "Dry run complete. URL list saved to: $URL_FILE"
 fi

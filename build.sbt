@@ -1,8 +1,8 @@
 name := "WikipediaAnalytics"
 version := "0.1.0"
-scalaVersion := "2.13.12"
+scalaVersion := "2.12.18"
 
-val sparkVersion = "3.5.0"
+val sparkVersion = "3.5.3"
 
 libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-core" % sparkVersion % "provided",
