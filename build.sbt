@@ -1,0 +1,39 @@
+name := "WikipediaAnalytics"
+version := "0.1.0"
+scalaVersion := "2.13.12"
+
+val sparkVersion = "3.5.0"
+
+libraryDependencies ++= Seq(
+  "org.apache.spark" %% "spark-core" % sparkVersion % "provided",
+  "org.apache.spark" %% "spark-sql"  % sparkVersion % "provided",
+
+  "org.slf4j" % "slf4j-api" % "2.0.9"
+)
+
+assembly / assemblyJarName := s"${name.value}-${version.value}.jar"
+
+assembly / assemblyMergeStrategy := {
+  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+  case "reference.conf"              => MergeStrategy.concat
+  case x                             => MergeStrategy.first
+}
+
+assembly / assemblyExcludedJars := {
+  val cp = (assembly / fullClasspath).value
+  cp.filter { f =>
+    f.data.getName.contains("spark-") ||
+      f.data.getName.contains("hadoop-") ||
+      f.data.getName.contains("scala-library")
+  }
+}
+
+wartremoverErrors ++= Warts.unsafe
+
+scalacOptions ++= Seq(
+  "-deprecation",
+  "-feature",
+  "-unchecked",
+  "-encoding", "UTF-8"
+)
+

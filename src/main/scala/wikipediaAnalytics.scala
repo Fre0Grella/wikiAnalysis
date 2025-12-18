@@ -1,8 +1,7 @@
-import org.apache.spark.{ SparkConf, SparkContext }
-import org.apache.spark.rdd.RDD
-import scala.collection.mutable
+import org.apache.spark.{SparkConf, SparkContext}
+import scala.collection.immutable.Seq
 
-object WikipediaAnalytics {
+object wikipediaAnalytics {
 
   def main(args: Array[String]): Unit = {
 
