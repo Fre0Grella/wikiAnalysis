@@ -1,5 +1,6 @@
 # Project specific
 dataset/
+checkpoints/
 
 # SBT specific
 

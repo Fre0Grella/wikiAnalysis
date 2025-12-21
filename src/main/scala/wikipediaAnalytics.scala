@@ -1,98 +1,44 @@
 import org.apache.spark.{SparkConf, SparkContext}
 import scala.collection.immutable.Seq
-
 object wikipediaAnalytics {
+  private val p = new mediaWikiHistorySchema() //parser data schema
+
 
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf().setAppName("Wikipedia Bus Factor")
     val sc   = new SparkContext(conf)
 
-    val allData    = sc.textFile("dataset/wikimedia_dumps/2025-11.enwiki.*.tsv.bz2")
-    val parsedData = allData.map(_.split("\t"))
-    val data       = parsedData.take(100)
+    val categories = sc.textFile("dataset/categories/articles_main_topics.tsv")
+    val articleTopics = categories.map(_.split("\t"))
+      .map(data => (data(0).toInt, data(1)))
+
+    val historyDump    = sc.textFile("dataset/wikimedia_dumps/2025-11.enwiki.*.tsv.bz2")
+    val userContributions = historyDump.map(_.split("\t"))
+      .filter(filterEvent)
+      .map(data => UserContribution(
+        data(p.idx("page_id")).toInt,
+        data(p.idx("page_title")),
+        data(p.idx("event_user_text")),
+        data(p.idx("revision_text_bytes_diff")).toInt)
+      ).keyBy(_.page_id).join(articleTopics)
+      .map(data =>)
+    val data = userContributions.take(100)
     println("Sample Data:")
-    data.foreach(row => println(row.mkString("\t")))
+    data.foreach(println)
+  }
+
+  private def filterEvent(data: Array[String]): Boolean = {
+    data(p.idx("event_entity")) != "revision" &&
+      data(p.idx("event_type")) != "create"  &&
+      data(p.idx("page_namespace")) != "0" &&
+      data(p.idx("event_user_is_bot_by")) != ""
   }
 }
 
-object MediaWikiHistorySchema {
-  val Fields = Map(
-    "wiki_db" -> 0,
-    "event_entity" -> 1,
-    "event_type" -> 2,
-    "event_timestamp" -> 3,
-    "event_comment" -> 4,
-    "event_user_id" -> 5,
-    "event_user_text_historical" -> 6,
-    "event_user_text" -> 7,
-    "event_user_blocks_historical" -> 8,
-    "event_user_blocks" -> 9,
-    "event_user_groups_historical" -> 10,
-    "event_user_groups" -> 11,
-    "event_user_is_bot_by_historical" -> 12,
-    "event_user_is_bot_by" -> 13,
-    "event_user_is_created_by_self" -> 14,
-    "event_user_is_created_by_system" -> 15,
-    "event_user_is_created_by_peer" -> 16,
-    "event_user_is_anonymous" -> 17,
-    "event_user_is_temporary" -> 18,
-    "event_user_is_permanent" -> 19,
-    "event_user_registration_timestamp" -> 20,
-    "event_user_creation_timestamp" -> 21,
-    "event_user_first_edit_timestamp" -> 22,
-    "event_user_revision_count" -> 23,
-    "event_user_seconds_since_previous_revision" -> 24,
-    "page_id" -> 25,
-    "page_title_historical" -> 26,
-    "page_title" -> 27,
-    "page_namespace_historical" -> 28,
-    "page_namespace_is_content_historical" -> 29,
-    "page_namespace" -> 30,
-    "page_namespace_is_content" -> 31,
-    "page_is_redirect" -> 32,
-    "page_is_deleted" -> 33,
-    "page_creation_timestamp" -> 34,
-    "page_first_edit_timestamp" -> 35,
-    "page_revision_count" -> 36,
-    "page_seconds_since_previous_revision" -> 37,
-    "user_id" -> 38,
-    "user_text_historical" -> 39,
-    "user_text" -> 40,
-    "user_blocks_historical" -> 41,
-    "user_blocks" -> 42,
-    "user_groups_historical" -> 43,
-    "user_groups" -> 44,
-    "user_is_bot_by_historical" -> 45,
-    "user_is_bot_by" -> 46,
-    "user_is_created_by_self" -> 47,
-    "user_is_created_by_system" -> 48,
-    "user_is_created_by_peer" -> 49,
-    "user_is_anonymous" -> 50,
-    "user_is_temporary" -> 51,
-    "user_is_permanent" -> 52,
-    "user_registration_timestamp" -> 53,
-    "user_creation_timestamp" -> 54,
-    "user_first_edit_timestamp" -> 55,
-    "revision_id" -> 56,
-    "revision_parent_id" -> 57,
-    "revision_minor_edit" -> 58,
-    "revision_deleted_parts" -> 59,
-    "revision_deleted_parts_are_suppressed" -> 60,
-    "revision_text_bytes" -> 61,
-    "revision_text_bytes_diff" -> 62,
-    "revision_text_sha1" -> 63,
-    "revision_content_model" -> 64,
-    "revision_content_format" -> 65,
-    "revision_is_deleted_by_page_deletion" -> 66,
-    "revision_deleted_by_page_deletion_timestamp" -> 67,
-    "revision_is_identity_reverted" -> 68,
-    "revision_first_identity_reverting_revision_id" -> 69,
-    "revision_seconds_to_identity_revert" -> 70,
-    "revision_is_identity_revert" -> 71,
-    "revision_is_from_before_page_creation" -> 72,
-    "revision_tags" -> 73
-  )
-
-  def idx(name: String): Int = Fields.getOrElse(name, -1)
-}
+case class UserContribution (
+                              page_id: Int,
+                              page_title: String,
+                              event_user_text: String,
+                              revision_text_bytes_diff: Int
+                            )
