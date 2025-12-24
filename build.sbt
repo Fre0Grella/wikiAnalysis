@@ -28,7 +28,22 @@ assembly / assemblyExcludedJars := {
   }
 }
 
-wartremoverErrors ++= Warts.unsafe
+wartremoverErrors ++= Warts.allBut(
+  Wart.Var,                 // Necessary for mutable state in parsers
+  Wart.Return,              // Useful for early exit in parsers
+  Wart.Throw,               // Necessary for error handling
+  Wart.NonUnitStatements,   // Spark's .cache(), .persist() trigger this
+  Wart.DefaultArguments,    // Allow default args in functions
+  Wart.Any,                 // Spark inference often hits 'Any'
+  Wart.Nothing,             // Spark inference often hits 'Nothing'
+  Wart.Serializable,        // Spark closures are serializable
+  Wart.JavaSerializable,    // Spark closures are serializable
+  Wart.Product,             // Case classes inherit Product
+  Wart.Equals,
+  Wart.SizeIs,
+  Wart.SeqApply,
+  Wart.FinalCaseClass
+)
 
 scalacOptions ++= Seq(
   "-deprecation",
