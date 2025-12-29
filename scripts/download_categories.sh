@@ -6,6 +6,7 @@ set -e
 WIKI="enwiki"
 DATE="20251201"  # Specific dump date
 OUT_DIR="./dataset/sql_dumps"
+CONV_DIR="./dataset/categories_dumps"
 
 # --- Help message ---
 usage() {
@@ -125,6 +126,65 @@ fi
 echo ""
 echo "✓ Downloads complete!"
 echo ""
-ls -lh "$OUT_DIR" | tail -n +2
+# --- CONVERSION LOGIC START ---
+echo "══════════════════════════════════════════════════════════════"
+echo " Converting to Splittable LZ4 Format"
+echo "══════════════════════════════════════════════════════════════"
+
+# Check for tools
+MISSING_TOOLS=0
+for tool in pigz awk bzip2; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "❌ Error: '$tool' is not installed or not in PATH."
+        MISSING_TOOLS=1
+    fi
+done
+
+if [ "$MISSING_TOOLS" -eq 1 ]; then
+    echo "Skipping conversion. Please install pigz, awk, and lz4 (see guide)."
+    exit 1
+fi
+
+FILES_TO_CONVERT=("$CATEGORYLINKS_FILE" "$LINKTARGET_FILE" "$PAGES_FILE")
+
+for file_name in "${FILES_TO_CONVERT[@]}"; do
+    INPUT_PATH="$OUT_DIR/$file_name"
+    OUTPUT_PATH="$CONV_DIR/${file_name%.gz}.bz2"
+
+    if [ ! -f "$INPUT_PATH" ]; then
+        echo "⚠️  Skipping $file_name (File not found)"
+        continue
+    fi
+
+
+       if [ ! -d "$CONV_DIR" ]; then
+           echo "📁 Creating directory: $CONV_DIR"
+           mkdir -p "$CONV_DIR"
+       fi
+
+    echo "Processing $file_name -> .lz4 ..."
+
+    # The pipeline: Decompress -> Split Lines -> Compress Block-LZ4
+    pigz -dc "$INPUT_PATH" | \
+    python scripts/split_stream.py | \
+    bzip2 -z -1 > "$OUTPUT_PATH"
+
+    if [ $? -eq 0 ]; then
+        echo "✅ Created $OUTPUT_PATH"
+        # Optional: Delete original .gz to save space
+        # rm "$INPUT_PATH"
+    else
+        echo "Failed to convert $file_name"
+    fi
+done
+
 echo ""
+echo "Converted files:"
+ls -lh "$CONV_DIR"/*.lz4
+echo ""
+# --- CLEANUP ---
+echo "Cleaning up temporary files..."
+rm -rf "$OUT_DIR"
+echo ""
+echo "🎉 All Done!"
 echo ""

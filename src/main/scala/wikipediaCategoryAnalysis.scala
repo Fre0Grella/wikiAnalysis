@@ -1,5 +1,5 @@
-import org.apache.spark.{ SparkConf, SparkContext }
 import org.apache.spark.rdd.RDD
+import org.apache.spark.{ SparkConf, SparkContext }
 
 import scala.collection.mutable
 import scala.util.Try
@@ -9,60 +9,86 @@ object wikipediaCategoryAnalysis {
 
   // ========== TYPES ==========
 
-  // noinspection ScalaWeakerAccess
+  // LinkTarget: (ID, Namespace, Title) - Schema confirmed
   case class LinkTarget(lt_id: Int, lt_namespace: Int, lt_title: String)
-  // noinspection ScalaWeakerAccess
+
+  // CategoryLink: (From_Page_ID, Type, Target_Category_ID)
+  // CHANGED: cl_target_id is now Int (Foreign Key to LinkTarget)
   case class CategoryLink(cl_from: Int, cl_type: String, cl_target_id: Int)
-  // noinspection ScalaWeakerAccess
+
+  // Page: (ID, Title) - Schema confirmed
   case class Page(page_id: Int, page_title: String)
-  // noinspection ScalaWeakerAccess
+
+  // HierarchyNode: (ID, Title, Children_IDs)
   case class HierarchyNode(page_id: Int, page_title: String, childs_id: Set[Int])
 
-  // ========== SQL PARSING ==========
+  // ========== PARSING LOGIC ==========
 
-  /** Extract VALUES from SQL INSERT statement Example: INSERT INTO linktarget VALUES
-    * (1,14,'Biology'),(2,14,'Chemistry'); Returns: Seq(Seq("1","14","Biology"),
-    * Seq("2","14","Chemistry"))
+  /** Robust parser for Splittable LZ4 SQL Dumps. Handles:
+    *   1. Header lines (skips them) 2. First data line with "INSERT INTO ... VALUES ..." prefix 3.
+    *      Standard data lines "(...)"
     */
-  @SuppressWarnings(Array("org.wartremover.warts.MutableDataStructures"))
   def extractSqlValues(line: String): Seq[Seq[String]] = {
-    // Only process INSERTs for this table
-    if (!line.startsWith("INSERT INTO `linktarget`") || !line.contains("VALUES")) {
+    var content = line.trim
+
+    // 1. Fast Skip for Metadata/Header lines
+    if (
+      content.isEmpty ||
+      content.startsWith("--") ||
+      content.startsWith("/*") ||
+      content.startsWith("/*!") ||
+      content.startsWith("DROP") ||
+      content.startsWith("CREATE") ||
+      content.startsWith("LOCK") ||
+      content.startsWith("UNLOCK")
+    ) {
       return Seq.empty
     }
 
-    // Keep only the part after "VALUES"
-    val valuesIdx = line.indexOf("VALUES")
-    if (valuesIdx == -1) return Seq.empty
+    // 2. Handle the very first data line which includes "INSERT INTO ... VALUES"
+    // Example: INSERT INTO `table` VALUES (1,'A'),(2,'B')
+    // Our Python splitter kept this line mostly intact but chopped the VALUES list.
+    if (content.startsWith("INSERT INTO")) {
+      val valuesIdx = content.indexOf("VALUES")
+      if (valuesIdx != -1) {
+        // Skip "VALUES" and everything before it
+        content = content.substring(valuesIdx + 6).trim
+      }
+    }
 
-    val afterValues = line.substring(valuesIdx + "VALUES".length).trim
-    // Drop trailing ';'
-    val noSemicolon =
-      if (afterValues.endsWith(";")) afterValues.dropRight(1).trim else afterValues
+    // 3. Remove trailing semicolon if present (end of file)
+    if (content.endsWith(";")) {
+      content = content.dropRight(1).trim
+    }
 
-    // Find first '(' and last ')'
-    val firstParen = noSemicolon.indexOf('(')
-    val lastParen  = noSemicolon.lastIndexOf(')')
-    if (firstParen == -1 || lastParen <= firstParen) return Seq.empty
+    // 4. Basic Validation: Must look like a tuple "(...)"
+    if (!content.startsWith("(") || !content.endsWith(")")) {
+      return Seq.empty
+    }
 
-    // Now we have: "(a,b,'c'),(d,e,'f'),..."
-    val inside = noSemicolon.substring(firstParen + 1, lastParen) // drop outer parens
+    // 5. Parse the tuple content
+    // Remove outer parens: (1, 'A') -> 1, 'A'
+    val tupleBody = content.substring(1, content.length - 1)
 
-    // Split tuples on "),(" safely
-    val tupleStrings = inside.split("\\),\\(")
-
-    tupleStrings.toSeq.map(parseTuple)
+    val fields = parseTuple(tupleBody)
+    if (fields.nonEmpty)
+      Seq(fields)
+    else
+      Seq.empty
   }
+
+  /** Parses comma-separated values respecting single quotes and escapes. Handles: 'O\'Reilly',
+    * 'Text with , inside', etc.
+    */
   @SuppressWarnings(Array("org.wartremover.warts.MutableDataStructures"))
   private def parseTuple(tuple: String): Seq[String] = {
     import scala.collection.mutable
     val currentVal = new StringBuilder
     val fields     = mutable.ArrayBuffer[String]()
-
     var inString   = false
     var escapeNext = false
 
-    for (ch <- tuple) {
+    for (ch <- tuple)
       if (escapeNext) {
         currentVal.append(ch)
         escapeNext = false
@@ -78,48 +104,32 @@ object wikipediaCategoryAnalysis {
       } else {
         currentVal.append(ch)
       }
-    }
-
     // flush last field
     val last = currentVal.result().trim
-    if (last.nonEmpty) fields += last
-
+    if (last.nonEmpty)
+      fields += last
     fields.toSeq
   }
-
-
 
   // ========== JOB 1: PARSE LINKTARGET ==========
 
   private def parseLinktarget(sc: SparkContext, linktarget_path: String): RDD[LinkTarget] = {
-    println("")
-    println("[JOB 1] Parsing linktarget table (categories)")
-    println("")
+    println("\n[JOB 1] Parsing linktarget table (categories)")
 
+    // Schema: (lt_id, lt_namespace, lt_title) -> Indices 0, 1, 2
 
-    val raw_rdd = sc
-      .textFile(linktarget_path)
-      //.filter(line => line.contains("INSERT INTO"))
-
-    val linktarget_rdd = raw_rdd
+    sc.textFile(linktarget_path)
       .flatMap(line => extractSqlValues(line))
       .filter { row =>
         if (row.length < 3)
           false
         else {
-          row.lift(1).map(_.toInt).getOrElse(-1) == 14 &&
-          row.lift(0).map(_.toInt).getOrElse(-1) > 0
+          // Namespace 14 = Category
+          row(1) == "14" &&
+          Try(row(0).toInt).isSuccess
         }
       }
       .map(row => LinkTarget(row(0).toInt, row(1).toInt, row(2)))
-
-    linktarget_rdd.cache()
-
-
-    val count = linktarget_rdd.count()
-    println(s"✓ Loaded ${count} categories in ")
-
-    linktarget_rdd
   }
 
   // ========== JOB 2: PARSE CATEGORYLINKS ==========
@@ -128,106 +138,102 @@ object wikipediaCategoryAnalysis {
     sc: SparkContext,
     categorylinks_path: String
   ): RDD[CategoryLink] = {
-    println("\n")
-    println("[JOB 2] Parsing categorylinks table (article↔category links)")
-    println("")
+    println("\n[JOB 2] Parsing categorylinks table")
 
+    // Schema: (cl_from, cl_sortkey, cl_timestamp, prefix, cl_type, collation, cl_target_id)
+    // Indices: 0, 1, 2, 3, 4, 5, 6
+    // We need: 0 (from), 4 (type), 6 (target_id)
 
-    val raw_rdd = sc
-      .textFile(categorylinks_path)
-      .filter(line => line.contains("INSERT INTO"))
-
-    val categorylinks_rdd = raw_rdd
+    sc.textFile(categorylinks_path)
       .flatMap(line => extractSqlValues(line))
       .filter { row =>
         if (row.length < 7)
           false
         else {
-          val cl_type = row.lift(4).getOrElse("")
-          cl_type == "page" || cl_type == "subcat" &&
-          row.lift(0).map(_.toInt).getOrElse(-1) > 0 &&
-          row.lift(6).map(_.toInt).getOrElse(-1) > 0
+          val cl_type = row(4)
+          // We want 'subcat' (category structure) and 'page' (articles in categories)
+          (cl_type == "page" || cl_type == "subcat") &&
+          Try(row(0).toInt).isSuccess &&
+          Try(row(6).toInt).isSuccess
         }
       }
       .map(row => CategoryLink(row(0).toInt, row(4), row(6).toInt))
-      .filter(t => t.cl_type == "subcat")
-      .distinct()
-
-    categorylinks_rdd.cache()
-
-
-    //val count = categorylinks_rdd.count()
-    println(s"✓ Loaded category links in ")
-
-    categorylinks_rdd
   }
 
   // ========== JOB 3: PARSE PAGE ==========
 
   private def parsePage(sc: SparkContext, page_path: String): RDD[Page] = {
-    println("\n")
-    println("[JOB 3] Parsing page table (article metadata)")
-    println("")
+    println("\n[JOB 3] Parsing page table")
 
+    // Schema: (page_id, page_namespace, page_title, ...) -> Indices 0, 1, 2
 
-    val raw_rdd = sc
-      .textFile(page_path)
-      .filter(line => line.contains("INSERT INTO"))
-
-    val page_rdd = raw_rdd
+    sc.textFile(page_path)
       .flatMap(line => extractSqlValues(line))
       .filter { row =>
         if (row.length < 3)
           false
         else {
-          row.lift(1).map(_.toInt).getOrElse(-1) == 0 &&
-          row.lift(0).map(_.toInt).getOrElse(-1) > 0
+          // Namespace 0 = Main Article
+          row(1) == "0" &&
+          Try(row(0).toInt).isSuccess
         }
       }
       .map(row => Page(row(0).toInt, row(2)))
-
-    page_rdd.cache()
-
-
-    //val count = page_rdd.count()
-    println(s"✓ Loaded articles in ")
-
-    page_rdd
   }
 
-  // ========== JOB 4: BUILD PROPER GRAPH LINK ==========
+  // ========== JOB 4: BUILD HIERARCHY ==========
 
   private def buildHierarchy(
     linktarget_rdd: RDD[LinkTarget],
     categorylinks_rdd: RDD[CategoryLink],
     page_rdd: RDD[Page]
   ): RDD[HierarchyNode] = {
-    println("\n")
-    println("[JOB 4] Building category hierarchy graph")
-    println("")
 
-    val pageIdLookup = categorylinks_rdd
-      .keyBy(_.cl_from)
-      .join(page_rdd.keyBy(_.page_id))
-      .map(data => (data._2._2.page_title, data._1))
-      .join(linktarget_rdd.keyBy(_.lt_title))
-      .map(data => (data._2._2.lt_id, data._2._1, data._1))
+    println("\n[JOB 4] Building hierarchy graph (Corrected & Optimized)")
 
-    val hierarchyNode = categorylinks_rdd
-      .keyBy(_.cl_target_id)
-      .join(pageIdLookup.keyBy(_._1))
-      .map(data => (data._2._1.cl_from, (data._2._2._1, data._2._2._3)))
-      .groupBy(_._2)
-      .map(data => HierarchyNode(data._1._1, data._1._2, data._2.map(_._1).toSet))
-      .cache()
+    // ---------------------------------------------------------
+    // STEP 1: Aggregate Children
+    // ---------------------------------------------------------
+    // We first shrink the 100M+ rows of links into ~2M rows of (ParentRef, Set[Children])
+    // We use the ID available in CategoryLinks (lt_id) to do this heavy lifting.
+    val rawLinks = categorylinks_rdd.map(cl => (cl.cl_target_id, cl.cl_from))
 
-    page_rdd.unpersist()
-    categorylinks_rdd.unpersist()
-    linktarget_rdd.unpersist()
-    //val count   = hierarchyNode.count()
-    println(s"✓ Built hierarchy nodes in ")
+    @SuppressWarnings(Array("org.wartremover.warts.MutableDataStructures"))
+    val groupedById = rawLinks
+      .aggregateByKey(mutable.HashSet.empty[Int])(
+        (set, childId) => set += childId,
+        (set1, set2) => set1 ++= set2
+      )
+      .mapValues(_.toSet)
+    // Result: RDD[(lt_id, Set[Child_Page_IDs])]
+    // We have reduced the data massively here. No OOM.
 
-    hierarchyNode
+    // ---------------------------------------------------------
+    // STEP 2: Resolve Parent Name (LinkTarget Join)
+    // ---------------------------------------------------------
+    // Now we translate the internal 'lt_id' to the string 'Title'
+    val ltMap = linktarget_rdd.map(lt => (lt.lt_id, lt.lt_title))
+
+    val groupedByTitle = groupedById
+      .join(ltMap)
+      .map { case (lt_id, (children, title)) => (title, children) }
+    // Result: RDD[(String_Title, Set[Child_Page_IDs])]
+
+    // ---------------------------------------------------------
+    // STEP 3: Resolve Parent Page ID (Page Join)
+    // ---------------------------------------------------------
+    // Finally, we use the Title to find the real Page ID.
+    val categoryPages = page_rdd
+      .map(p => (p.page_title, p.page_id))
+
+    val finalHierarchy = groupedByTitle
+      .join(categoryPages)
+      .map { case (title, (children, realPageId)) =>
+        // Now we have everything: The real ID, the Title, and the Set of children
+        HierarchyNode(realPageId, title, children)
+      }
+
+    finalHierarchy
   }
 
   // ========== JOB 5: FIND MAIN TOPICS ==========
@@ -238,366 +244,84 @@ object wikipediaCategoryAnalysis {
     main_topic_name: String = "Main_topic_classifications"
   ): Set[Page] = {
     println("\n" + "=" * 70)
-    println("[JOB 5] Finding main topics")
+    println(s"[JOB 5] Finding main topics under '$main_topic_name'")
     println("=" * 70)
 
-
-    val main_topic_result = hierarchyNode
+    // Find the node for "Main_topic_classifications"
+    val rootNode = hierarchyNode
       .filter(t => t.page_title == main_topic_name)
       .collect()
 
-    if (main_topic_result.isEmpty) {
-      throw new Exception(s"'$main_topic_name' not found in categories!")
+    if (rootNode.isEmpty) {
+      println(s"⚠️ Warning: '$main_topic_name' not found. Check casing or dataset.")
+      return Set.empty
     }
 
-    println(s"✓ Found Main_topic_classifications")
+    val root = rootNode(0)
+    println(
+      s"✓ Found Root: ${root.page_title} (ID=${root.page_id}) with ${root.childs_id.size} children"
+    )
 
-    val main_topics =
+    // Get the actual Page objects for these children
+    // We can filter the hierarchy again to find nodes that ARE these children
+    // (Assuming main topics are also Categories themselves)
+
+    val mainTopics =
       hierarchyNode
-        .filter(n => main_topic_result(0).childs_id.contains(n.page_id))
+        .filter(n => root.childs_id.contains(n.page_id))
         .map(n => Page(n.page_id, n.page_title))
         .collect()
         .toSet
-    println(s"✓ Found ${main_topics.size} main topics")
 
-    if (main_topics.nonEmpty) {
-      println(s"  Main topics:")
-      main_topics.foreach(mt => println(s"      - ${mt.page_title} (page_id=${mt.page_id})"))
-    }
+    println(s"✓ Found ${mainTopics.size} main topics:")
+    mainTopics.foreach(mt => println(s" - ${mt.page_title}"))
 
-    println(s"✓ Completed in ")
-
-    sc.broadcast(main_topics)
-    main_topics
-  }
-  /*
-  // ========== NEW JOB 5A: PRECOMPUTE CATEGORY MAIN TOPICS (OPTIMIZED) ==========
-
-  /** Precompute main topic for all categories using iterative label propagation.
-   *
-   * Iterative Label Propagation:
-   *   1. Mark direct main topics: (mainTopic_id → mainTopic_id) 2. For K iterations:
-   *      - Propagate labels upward through hierarchy
-   *      - Propagate labels downward (handles backward cycle edges)
-   *      - Union + ReduceByKey ensures convergence
-   *      3. Result: (category_id → main_topic_id) for all reachable categories
-   *
-   * Cycle handling: Built-in via union + reduceByKey (idempotent) Time: O(K × #edges) where K ≈ 10
-   * (typical hierarchy depth) Space: O(#categories) distributed across nodes
-   */
-  def precomputeCategoryMainTopics(
-    sc: SparkContext,
-    hierarchy_rdd: RDD[(Int, Int)],
-    main_topics_set: Set[Int]
-  ): RDD[(Int, Int)] = {
-    println("\n" + "=" * 70)
-    println("[JOB 6A] Precomputing category → main topic (OPTIMIZED)")
-    println("=" * 70)
-    println("         Using iterative label propagation (Option 1)")
-
-
-    // Step 1: Mark direct main topics
-    val directMainTopics: RDD[(Int, Int)] = sc.parallelize(
-      main_topics_set.map(lt_id => (lt_id, lt_id)).toSeq
-    )
-
-    // Step 2: Iteratively propagate labels
-    var labels: RDD[(Int, Int)] = directMainTopics
-    labels.persist()
-
-    val maxIters  = 15 // Tune based on expected hierarchy depth
-    var converged = false
-
-    for (iter <- 1 to maxIters if !converged) {
-      val beforeCount = labels.count()
-
-      // Propagate upward through parent edges (child → parent direction)
-      val parentLabeled: RDD[(Int, Int)] = hierarchy_rdd
-        .map { case (child, parent) => (parent, child) } // key by parent
-        .join(labels) // (parent, (child, mainTopic))
-        .map { case (_, (child, mainTopicId)) => (child, mainTopicId) }
-
-      // Propagate downward through child edges (handles backward cycle edges)
-      val childLabeled: RDD[(Int, Int)] = hierarchy_rdd
-        .map { case (child, parent) => (child, parent) } // key by child
-        .join(labels) // (child, (parent, mainTopic))
-        .map { case (_, (parent, mainTopicId)) => (parent, mainTopicId) }
-
-      // Union both directions + keep first label (idempotent, cycle-safe)
-      val newLabels = labels
-        .union(parentLabeled)
-        .union(childLabeled)
-        .reduceByKey((a, _) => a) // First label wins, never changes
-        .persist()
-
-      val afterCount = newLabels.count()
-
-      labels.unpersist()
-      labels = newLabels
-
-        println(
-        s"  Iteration $iter: $afterCount categories labeled (new: ${afterCount - beforeCount}) []"
-      )
-
-      // Check convergence: no new labels
-      if (afterCount == beforeCount) {
-        println(s"  ✓ Convergence at iteration $iter")
-        converged = true
-      }
-    }
-
-    val count   = labels.count()
-    println(s"✓ Precomputed $count category → main topic mappings in ")
-
-    labels
+    mainTopics
   }
 
-  // ========== NEW JOB 6B: FILTER HIDDEN CATEGORIES ==========
-
-  /** Remove hidden categories (Stub articles, Maintenance, etc.) using depth-based filtering.
-   *
-   * Key insight: Hidden categories are typically at shallow depth from main topics. Depth ≥ 2
-   * removes most hidden categories.
-   *
-   * Removes ~25% of categories, cleaning up results significantly.
-   */
-  def filterHiddenCategories(
-    sc: SparkContext,
-    catMainTopic: RDD[(Int, Int)],
-    hierarchy_rdd: RDD[(Int, Int)],
-    linktarget_rdd: RDD[(Int, String)],
-    minDepth: Int = 2
-  ): RDD[(Int, Int)] = {
-    println("\n" + "=" * 70)
-    println(s"[JOB 6B] Filtering hidden categories (minDepth=$minDepth)")
-    println("=" * 70)
-
-
-    // Step 1: Compute depth of each category from its main topic
-    // Initialize: main topics have depth 0, others have depth 1
-    var depths: RDD[(Int, Int)] = catMainTopic
-      .map { case (cat, mainTopic) =>
-        if (cat == mainTopic) {
-          (cat, 0) // Main topic itself is depth 0
-        } else {
-          (cat, 1) // Others start at depth 1 (will be refined)
-        }
-      }
-
-    depths.persist()
-
-    // Step 2: Iteratively increase depth by traversing hierarchy
-    // Each hop up increases depth
-    val maxDepthIters  = 10
-    var depthConverged = false
-
-    for (iter <- 1 to maxDepthIters if !depthConverged) {
-      val beforeCount = depths.count()
-
-      // For each edge (child, parent): if parent has depth D,
-      // child can have depth at most D+1
-      val depthIncreased: RDD[(Int, Int)] = hierarchy_rdd
-        .map { case (child, parent) => (parent, child) } // key by parent
-        .join(depths) // (parent, (child, depth[parent]))
-        .map { case (_, (child, parentDepth)) => (child, parentDepth + 1) }
-
-      // Keep maximum depth seen (some categories have multiple parents)
-      val newDepths = depths
-        .union(depthIncreased)
-        .reduceByKey((d1, d2) => math.max(d1, d2))
-        .persist()
-
-      val afterCount = newDepths.count()
-
-      depths.unpersist()
-      depths = newDepths
-
-      println(s"  Depth iter $iter: updated (convergence check...)")
-
-      if (afterCount == beforeCount) {
-        println(s"  ✓ Depth computation converged at iteration $iter")
-        depthConverged = true
-      }
-    }
-
-    // Step 3: Filter by minimum depth
-    val filtered = depths
-      .filter(_._2 >= minDepth)
-      .map(_._1)                // Return just category IDs
-      .map(catId => (catId, 1)) // Dummy value for join compatibility
-
-    val beforeCount    = catMainTopic.count()
-    val afterCount     = filtered.count()
-    val removed        = beforeCount - afterCount
-    val removedPercent =
-      if (beforeCount > 0)
-        (100.0 * removed / beforeCount).toInt
-      else
-        0
-
-    println(s"✓ Removed $removed hidden categories ($removedPercent%)")
-    println(s"  Remaining: $afterCount categories for article mapping")
-    println(s"  Completed in ")
-
-    // Return filtered categories (rejoin with catMainTopic to get proper format)
-    catMainTopic
-      .join(filtered)
-      .map { case (cat, (mainTopic, _)) => (cat, mainTopic) }
-  }
-
-  // ========== JOB 6C: MAP ARTICLES TO MAIN TOPICS (SIMPLIFIED) ==========
-
-  /** Map articles to main topics using precomputed category→mainTopic mapping. This is now a simple
-   * lookup join (no DFS per article).
-   *
-   * Time: O(#articles) instead of O(#articles × depth) ~7-10x faster than naive approach
-   */
-  def mapArticlesToMainTopics(
-    sc: SparkContext,
-    categorylinks_rdd: RDD[(Int, String, Int)],
-    page_rdd: RDD[(Int, String)],
-    linktarget_rdd: RDD[(Int, String)],
-    catMainTopic: RDD[(Int, Int)]
-  ): RDD[(Int, String, String, Int)] = {
-    println("\n" + "=" * 70)
-    println("[JOB 6C] Mapping articles to main topics (simplified join)")
-    println("=" * 70)
-
-
-    // Extract article→category links
-    val articleCategories: RDD[(Int, Int)] = categorylinks_rdd
-      .filter(_._2 == "page")
-      .map { case (pageId, _, catId) => (catId, pageId) }
-
-    // Simple join: (catId, pageId) JOIN (catId, mainTopicId) = (catId, (pageId, mainTopicId))
-    val articleMainTopics: RDD[(Int, Int)] = articleCategories
-      .join(catMainTopic)
-      .map { case (_, (pageId, mainTopicId)) => (pageId, mainTopicId) }
-
-    // Join with page titles
-    val withPageTitle = articleMainTopics
-      .join(page_rdd)
-      .map { case (pageId, (mainTopicId, pageTitle)) => (mainTopicId, (pageId, pageTitle)) }
-
-    // Join with main topic titles
-    val result = withPageTitle
-      .join(linktarget_rdd)
-      .map { case (mainTopicId, ((pageId, pageTitle), mainTopicTitle)) =>
-        (pageId, pageTitle, mainTopicTitle, mainTopicId)
-      }
-
-    result.persist()
-    val count = result.count()
-
-    println(s"✓ Mapped $count articles to main topics in ")
-
-    result
-  }
-
-  // ========== OUTPUT ==========
-
-  def writeOutput(result_rdd: RDD[(Int, String, String, Int)], output_path: String): Unit = {
-    println(s"\n[OUTPUT] Writing to $output_path...")
-
-    val csv_rdd = result_rdd.map { t =>
-      val page_id          = t._1
-      val article_title    = t._2.replace(",", "\\,")
-      val main_topic       = t._3.replace(",", "\\,")
-      val main_topic_lt_id = t._4
-      s"$page_id,$article_title,$main_topic,$main_topic_lt_id"
-    }
-
-    val output_file = new File(output_path)
-    output_file.mkdirs()
-
-    val csv_path = s"$output_path/articles_main_topics.csv"
-    csv_rdd.coalesce(1).saveAsTextFile(csv_path)
-    println(s"✓ CSV: $csv_path")
-
-    val tsv_rdd = result_rdd.map { t =>
-      val page_id          = t._1
-      val article_title    = t._2.replace("\t", " ")
-      val main_topic       = t._3.replace("\t", " ")
-      val main_topic_lt_id = t._4
-      s"$page_id\t$article_title\t$main_topic\t$main_topic_lt_id"
-    }
-
-    val tsv_path = s"$output_path/articles_main_topics.tsv"
-    tsv_rdd.coalesce(1).saveAsTextFile(tsv_path)
-    println(s"✓ TSV: $tsv_path")
-  }
-   */
   // ========== MAIN ==========
 
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf()
       .setAppName("WikipediaCategoryAnalysis")
-      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .set("spark.kryoserializer.buffer.max", "512m")
-      .set("spark.driver.maxResultSize", "2g")
+      .setMaster("local[*]")
+      .set("spark.executor.memory", "4g")
+      .set("spark.driver.memory", "4g")
 
     val sc = new SparkContext(conf)
+    sc.setLogLevel("WARN")
 
-    val linktarget_path    = "dataset/sql_dumps/*-linktarget.sql.gz"
-    //val linktarget_path    = "dataset/sql_dumps/test.txt"
-    val categorylinks_path = "dataset/sql_dumps/*-categorylinks.sql.gz"
-    val page_path          = "dataset/sql_dumps/*-page.sql.gz"
-    val output_path        = "dataset/categories/articles_main_topics_tuple.tsv"
+    // PATHS to your new LZ4 files
+    val linktarget_path    = "dataset/categories_dumps/enwiki-20251201-linktarget.sql.bz2"
+    val categorylinks_path = "dataset/categories_dumps/enwiki-20251201-categorylinks.sql.bz2"
+    val page_path          = "dataset/categories_dumps/enwiki-20251201-page.sql.bz2"
 
     try {
+      // 1. Load Data
+      val linktarget    = parseLinktarget(sc, linktarget_path)
+      // val checklt       = linktarget.count()
+      // println(s"✓ LinkTarget parsed with $checklt entries.")
+      val categorylinks = parseCategorylinks(sc, categorylinks_path)
+      // val checkcl       = categorylinks.count()
+      // println(s"✓ CategoryLinks parsed with $checkcl entries.")
+      val page          = parsePage(sc, page_path)
+      // val checkp        = page.count()
+      // println(s"✓ Page parsed with $checkp entries.")
 
-      val pipeline_start = System.currentTimeMillis()
+      // 2. Build Graph
+      val hierarchy = buildHierarchy(linktarget, categorylinks, page)
+      hierarchy.cache()
+      println(s"✓ Hierarchy graph built with ${hierarchy.count()} nodes.")
 
-      // Parse input files
-      val linktarget_rdd    = parseLinktarget(sc, linktarget_path)
-      linktarget_rdd.take(10).foreach(data => println(s"  Sample LinkTarget: $data"))
-      val categorylinks_rdd = parseCategorylinks(sc, categorylinks_path)
-      categorylinks_rdd.take(10).foreach(data => println(s"  Sample CategoryLink: $data"))
-      val page_rdd          = parsePage(sc, page_path)
-      page_rdd.take(10).foreach(data => println(s"  Sample Page: $data"))
+      // 3. Find Main Topics
+      val maintopic = findMainTopics(sc, hierarchy)
+      val checkmt   = maintopic.size
+      println(s"✓ Found $checkmt main topics.")
+      maintopic.foreach(mt => println(s" - ${mt.page_title}"))
 
-      // Build hierarchy
-      val hierarchy_rdd = buildHierarchy(linktarget_rdd, categorylinks_rdd, page_rdd)
-      hierarchy_rdd.take(10).foreach(data => println(s"  Sample HierarchyNode: $data"))
+      // 4. (Optional) Run PageRank or other analysis here...
 
-      // Find main topics
-      val main_topics_set = findMainTopics(sc,hierarchy_rdd)
-      main_topics_set.take(10).foreach(data => println(s"  Sample Main Topic: $data"))
-
-      /*// NEW JOB 6A: Precompute category → main topic (cycle-safe, handles cycles automatically)
-      val catMainTopic = precomputeCategoryMainTopics(
-        sc, hierarchy_rdd, main_topics_set
-      )
-
-      // NEW JOB 6B: Filter hidden categories (depth-based filtering)
-      val catMainTopicFiltered = filterHiddenCategories(
-        sc, catMainTopic, hierarchy_rdd, linktarget_rdd,
-        minDepth = 2  // Tune this (0=baseline, 1=aggressive, 2=recommended, 3=very aggressive)
-      )
-
-      // JOB 6C: Map articles (now trivial - just joins)
-      val result_rdd = mapArticlesToMainTopics(
-        sc, categorylinks_rdd, page_rdd, linktarget_rdd, catMainTopicFiltered
-      )
-
-      // Write output
-      writeOutput(result_rdd, output_path)
-       */
-      val elapsed = (System.currentTimeMillis() - pipeline_start) / 1000.0
-      println("\n" + "=" * 70)
-      println("✓ ALL JOBS COMPLETED SUCCESSFULLY")
-      println(f"  Total time: $elapsed%.1fs (${elapsed / 60}%.1fm)")
-      println("  Optimization: Option 1 (Iterative Label Propagation)")
-      println("  - Cycle handling: Built-in via union+reduceByKey")
-      println("  - Hidden categories: Removed via depth-based filtering")
-      println("=" * 70 + "\n")
-
-    } catch {
-      case e: Exception =>
-        println(s"\n❌ FATAL ERROR: ${e.getMessage}")
-        e.printStackTrace()
-        System.exit(1)
     } finally sc.stop()
   }
 }
