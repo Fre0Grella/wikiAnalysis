@@ -28,7 +28,7 @@ object wikipediaCategoryAnalysis {
     *   1. Header lines (skips them) 2. First data line with "INSERT INTO ... VALUES ..." prefix 3.
     *      Standard data lines "(...)"
     */
-  def extractSqlValues(line: String): Seq[Seq[String]] = {
+  private def extractSqlValues(line: String): Seq[Seq[String]] = {
     var content = line.trim
 
     // 1. Fast Skip for Metadata/Header lines
@@ -114,7 +114,6 @@ object wikipediaCategoryAnalysis {
   // ========== JOB 1: PARSE LINKTARGET ==========
 
   private def parseLinktarget(sc: SparkContext, linktarget_path: String): RDD[LinkTarget] = {
-    println("\n[JOB 1] Parsing linktarget table (categories)")
 
     // Schema: (lt_id, lt_namespace, lt_title) -> Indices 0, 1, 2
 
@@ -138,7 +137,6 @@ object wikipediaCategoryAnalysis {
     sc: SparkContext,
     categorylinks_path: String
   ): RDD[CategoryLink] = {
-    println("\n[JOB 2] Parsing categorylinks table")
 
     // Schema: (cl_from, cl_sortkey, cl_timestamp, prefix, cl_type, collation, cl_target_id)
     // Indices: 0, 1, 2, 3, 4, 5, 6
@@ -163,7 +161,6 @@ object wikipediaCategoryAnalysis {
   // ========== JOB 3: PARSE PAGE ==========
 
   private def parsePage(sc: SparkContext, page_path: String): RDD[Page] = {
-    println("\n[JOB 3] Parsing page table")
 
     // Schema: (page_id, page_namespace, page_title, ...) -> Indices 0, 1, 2
 
@@ -174,109 +171,117 @@ object wikipediaCategoryAnalysis {
           false
         else {
           // Namespace 0 = Main Article
-          row(1) == "0" &&
+          row(1) == "0" || row(1) == "14" &&
           Try(row(0).toInt).isSuccess
         }
       }
       .map(row => Page(row(0).toInt, row(2)))
   }
 
-  // ========== JOB 4: BUILD HIERARCHY ==========
+  // ---------------------------------------------------------------------------
+  // JOB 4: Identify Root Categories (Children of "Main_topic_classifications")
+  // ---------------------------------------------------------------------------
+  private def identifyRootCategories(
+    ltRDD: RDD[LinkTarget],
+    clRDD: RDD[CategoryLink],
+    pgRDD: RDD[Page]
+  ): Map[Int, String] = {
 
-  private def buildHierarchy(
-    linktarget_rdd: RDD[LinkTarget],
-    categorylinks_rdd: RDD[CategoryLink],
-    page_rdd: RDD[Page]
-  ): RDD[HierarchyNode] = {
+    val mainTopicName = pgRDD.filter(_.page_id == 7345184).map(_.page_title).collect().head
+    val mainTopicId   = ltRDD.filter(_.lt_title == mainTopicName).map(_.lt_id).collect().head
+    println(s"Identified Main Topic Category: $mainTopicName (linktarget ID: $mainTopicId)")
 
-    println("\n[JOB 4] Building hierarchy graph (Corrected & Optimized)")
+    val roots = clRDD
+      .filter(cl => cl.cl_target_id == mainTopicId)
+      .map(cl => (cl.cl_from, cl.cl_target_id))
 
-    // ---------------------------------------------------------
-    // STEP 1: Aggregate Children
-    // ---------------------------------------------------------
-    // We first shrink the 100M+ rows of links into ~2M rows of (ParentRef, Set[Children])
-    // We use the ID available in CategoryLinks (lt_id) to do this heavy lifting.
-    val rawLinks = categorylinks_rdd.map(cl => (cl.cl_target_id, cl.cl_from))
 
-    @SuppressWarnings(Array("org.wartremover.warts.MutableDataStructures"))
-    val groupedById = rawLinks
-      .aggregateByKey(mutable.HashSet.empty[Int])(
-        (set, childId) => set += childId,
-        (set1, set2) => set1 ++= set2
-      )
-      .mapValues(_.toSet)
-    // Result: RDD[(lt_id, Set[Child_Page_IDs])]
-    // We have reduced the data massively here. No OOM.
+    val rootNames = pgRDD.map(pg => (pg.page_id, pg.page_title))
 
-    // ---------------------------------------------------------
-    // STEP 2: Resolve Parent Name (LinkTarget Join)
-    // ---------------------------------------------------------
-    // Now we translate the internal 'lt_id' to the string 'Title'
-    val ltMap = linktarget_rdd.map(lt => (lt.lt_id, lt.lt_title))
-
-    val groupedByTitle = groupedById
-      .join(ltMap)
-      .map { case (lt_id, (children, title)) => (title, children) }
-    // Result: RDD[(String_Title, Set[Child_Page_IDs])]
-
-    // ---------------------------------------------------------
-    // STEP 3: Resolve Parent Page ID (Page Join)
-    // ---------------------------------------------------------
-    // Finally, we use the Title to find the real Page ID.
-    val categoryPages = page_rdd
-      .map(p => (p.page_title, p.page_id))
-
-    val finalHierarchy = groupedByTitle
-      .join(categoryPages)
-      .map { case (title, (children, realPageId)) =>
-        // Now we have everything: The real ID, the Title, and the Set of children
-        HierarchyNode(realPageId, title, children)
-      }
-
-    finalHierarchy
+    roots
+      .join(rootNames)
+      .map { case (rootId, (_, rootName)) => (rootId, rootName) }
+      .collect()
+      .toMap
   }
 
-  // ========== JOB 5: FIND MAIN TOPICS ==========
+  // ---------------------------------------------------------------------------
+  // JOB 5: Propagate Labels and Assign to Articles (Optimized with Broadcast)
+  // ---------------------------------------------------------------------------
+  @SuppressWarnings(Array("org.wartremover.warts.While"))
+  private def buildPageToRootsMap(
+    linkTargetRDD: RDD[LinkTarget],
+    categoryLinksRDD: RDD[CategoryLink],
+    pageRDD: RDD[Page],
+    sc: SparkContext
+  ): RDD[(Int, Set[String])] = {
 
-  private def findMainTopics(
-    sc: SparkContext,
-    hierarchyNode: RDD[HierarchyNode],
-    main_topic_name: String = "Main_topic_classifications"
-  ): Set[Page] = {
-    println("\n" + "=" * 70)
-    println(s"[JOB 5] Finding main topics under '$main_topic_name'")
-    println("=" * 70)
+    // A. Identify Roots
+    val rootMap = identifyRootCategories(linkTargetRDD, categoryLinksRDD, pageRDD)
+    println(s"Roots: ${rootMap.values.mkString(", ")}")
 
-    // Find the node for "Main_topic_classifications"
-    val rootNode = hierarchyNode
-      .filter(t => t.page_title == main_topic_name)
-      .collect()
+    // B. Propagate on Category Skeleton (Iterative)
+    val skeleton = categoryLinksRDD
+      .filter(_.cl_type == "subcat")
+      .map(cl => (cl.cl_target_id, cl.cl_from))
+      .persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
 
-    if (rootNode.isEmpty) {
-      println(s"⚠️ Warning: '$main_topic_name' not found. Check casing or dataset.")
-      return Set.empty
+    var activeFrontier = sc.parallelize(rootMap.toSeq) // (CatID, RootLabel)
+    var allAssignments = activeFrontier
+
+    var iteration = 0
+    var count     = 1L
+
+    while (count > 0 && iteration < 20) {
+      iteration += 1
+
+      val nextStep = activeFrontier
+        .join(skeleton)
+        .map { case (_, (label, childId)) => (childId, label) }
+        .distinct()
+
+      activeFrontier = nextStep.subtract(allAssignments)
+      activeFrontier.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+
+      count = activeFrontier.count()
+      if (count > 0)
+        allAssignments = allAssignments.union(activeFrontier)
     }
 
-    val root = rootNode(0)
-    println(
-      s"✓ Found Root: ${root.page_title} (ID=${root.page_id}) with ${root.childs_id.size} children"
-    )
+    skeleton.unpersist()
 
-    // Get the actual Page objects for these children
-    // We can filter the hierarchy again to find nodes that ARE these children
-    // (Assuming main topics are also Categories themselves)
+    // C. Collect Category->Roots Map to Driver (The Optimization)
+    // We pre-aggregate here so the map is smaller (CatID -> Set[Roots])
+    println("Collecting category labels for Broadcast...")
+    val catToRootsLocal = allAssignments
+      .aggregateByKey(Set.empty[String])(
+        (set, label) => set + label,
+        (set1, set2) => set1 ++ set2
+      )
+      .collectAsMap() // Brings ~200-400MB to Driver
 
-    val mainTopics =
-      hierarchyNode
-        .filter(n => root.childs_id.contains(n.page_id))
-        .map(n => Page(n.page_id, n.page_title))
-        .collect()
-        .toSet
+    val catToRootsBc = sc.broadcast(catToRootsLocal)
 
-    println(s"✓ Found ${mainTopics.size} main topics:")
-    mainTopics.foreach(mt => println(s" - ${mt.page_title}"))
+    // D. Map-Side Join with Huge Article Links (No Shuffle)
+    println("Broadcasting labels and mapping articles...")
+    val finalPageRoots = categoryLinksRDD
+      .filter(_.cl_type == "page")
+      .mapPartitions { iter =>
+        val lookup = catToRootsBc.value // Access Broadcast
 
-    mainTopics
+        iter.flatMap { cl =>
+          // cl.cl_target_id is the Parent Category
+          // Check if this parent has any Root Labels
+          lookup.get(cl.cl_target_id) match {
+            case Some(roots) => List((cl.cl_from, roots)) // (ArticleID, Set[Roots])
+            case None        => Nil
+          }
+        }
+      }
+      // Final Merge: If Article is in Cat A (Arts) and Cat B (History)
+      .reduceByKey(_ ++ _)
+
+    finalPageRoots
   }
 
   // ========== MAIN ==========
@@ -310,15 +315,12 @@ object wikipediaCategoryAnalysis {
       // println(s"✓ Page parsed with $checkp entries.")
 
       // 2. Build Graph
-      val hierarchy = buildHierarchy(linktarget, categorylinks, page)
-      hierarchy.cache()
-      println(s"✓ Hierarchy graph built with ${hierarchy.count()} nodes.")
-
-      // 3. Find Main Topics
-      val maintopic = findMainTopics(sc, hierarchy)
-      val checkmt   = maintopic.size
-      println(s"✓ Found $checkmt main topics.")
-      maintopic.foreach(mt => println(s" - ${mt.page_title}"))
+      val hierarchy = buildPageToRootsMap(linktarget, categorylinks, page, sc)
+      val sample    = hierarchy.take(20)
+      println("\nSample Page to Root Categories Mapping:")
+      sample.foreach { case (pageId, roots) =>
+        println(s"Page ID: $pageId -> Roots: ${roots.mkString(", ")}")
+      }
 
       // 4. (Optional) Run PageRank or other analysis here...
 
