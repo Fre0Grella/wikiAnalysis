@@ -1,3 +1,4 @@
+import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.{ SparkConf, SparkContext }
 
@@ -176,12 +177,12 @@ object wikipediaCategoryAnalysis {
   // JOB 4: Identify Root Categories (Children of "Main_topic_classifications")
   // ---------------------------------------------------------------------------
   // Finds all categories directly under "Main_topic_classifications"
-  // Returns Map of (LinkTargetID -> CategoryName)
+  // Returns Map of (LinkTargetID -> (page_id, CategoryName))
   private def identifyRootCategories(
     ltRDD: RDD[LinkTarget],
     clRDD: RDD[CategoryLink],
     pgRDD: RDD[Page]
-  ): Map[Int, String] = {
+  ): Map[Int, (Int, String)] = {
 
     val mainTopicName = pgRDD.filter(_.page_id == 7345184).map(_.page_title).collect().head
     val mainTopicId   = ltRDD.filter(_.lt_title == mainTopicName).map(_.lt_id).collect().head
@@ -189,16 +190,17 @@ object wikipediaCategoryAnalysis {
 
     val rootsId = clRDD
       .filter(cl => cl.cl_target_id == mainTopicId && cl.cl_type == "subcat")
-      .map(cl => cl.cl_from).collect()
+      .map(cl => cl.cl_from)
+      .collect()
 
     val rootsName = pgRDD
       .filter(pg => rootsId.contains(pg.page_id))
-      .map(_.page_title)
-      .collect()
+      .map(rn => (rn.page_title, rn.page_id))
 
     ltRDD
-      .filter(lt => rootsName.contains(lt.lt_title))
-      .map(lt => (lt.lt_id, lt.lt_title))
+      .map(lt => (lt.lt_title, lt.lt_id))
+      .join(rootsName)
+      .map { case (title, (lt_id, page_id)) => (lt_id, (page_id, title)) }
       .collect()
       .toMap
   }
@@ -214,6 +216,7 @@ object wikipediaCategoryAnalysis {
     sc: SparkContext
   ): RDD[(Int, Set[String])] = {
 
+
     pageRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
     categoryLinksRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
     // linkTargetRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
@@ -221,20 +224,26 @@ object wikipediaCategoryAnalysis {
     val rootMap = identifyRootCategories(linkTargetRDD, categoryLinksRDD, pageRDD)
     println(s"Roots: ${rootMap.mkString(", ")}")
     // linkTargetRDD.unpersist()
-    pageRDD.unpersist()
 
+    val pg       = pageRDD.map(pg => (pg.page_id, pg.page_title))
+    val lt       = linkTargetRDD.map(lt => (lt.lt_title, lt.lt_id))
     // B. Propagate on Category Skeleton (Iterative)
     val skeleton = categoryLinksRDD
       .filter(_.cl_type == "subcat")
-      .map(cl => (cl.cl_target_id, cl.cl_from))
-
+      .map(cl => (cl.cl_from, cl.cl_target_id))
+      .join(pg)
+      .map { case (id, (targetId, title)) => (title, (id, targetId)) }
+      .join(lt)
+      .map { case (_, ((page_id, targetId), page_LtId)) => (targetId, (page_id, page_LtId)) }
+// Skeleton: (Parent_LtId, (Page_Id, Page_LtId))
+    pageRDD.unpersist()
 
     skeleton.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
     val skellyCount = skeleton.count()
 
     printf("Category Skeleton has %d edges.\n", skellyCount)
 
-    var activeFrontier = sc.parallelize(rootMap.toSeq) // (LinkTargetId, RootLabel)
+    var activeFrontier = sc.parallelize(rootMap.toSeq) // (LinkTargetId,(page_id, RootLabel))
     var allAssignments = activeFrontier
 
     var iteration = 0
@@ -248,7 +257,9 @@ object wikipediaCategoryAnalysis {
 
       val nextStep = activeFrontier
         .join(skeleton)
-        .map { case (_, (label, childId)) => (childId, label) }
+        .map { case (_, ((_, root_label), (page_id, page_ltId))) =>
+          (page_ltId, (page_id, root_label))
+        }
         .distinct()
 
       activeFrontier.unpersist()
@@ -258,16 +269,26 @@ object wikipediaCategoryAnalysis {
       count = activeFrontier.count()
       if (count > 0)
         allAssignments = allAssignments.union(activeFrontier)
+
+      if (iteration % 3 == 0) {
+        printf("  → Checkpointing at iteration %d...\n", iteration)
+        allAssignments.checkpoint()
+        allAssignments.count()  // Force materialization
+        printf("  ✓ Checkpoint complete\n")
+      }
     }
+    activeFrontier.unpersist()
 
     printf("Completed a total of %d categories of %d total.\n", allAssignments.count(), skellyCount)
 
     skeleton.unpersist()
+    allAssignments.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
 
     // C. Collect Category->Roots Map to Driver (The Optimization)
     // We pre-aggregate here so the map is smaller (CatID -> Set[Roots])
     println("Collecting category labels for Broadcast...")
     val catToRootsLocal = allAssignments
+      .map { case (ltId, (_, cat)) => (ltId, cat) }
       .aggregateByKey(Set.empty[String])(
         (set, label) => set + label,
         (set1, set2) => set1 ++ set2
@@ -295,9 +316,24 @@ object wikipediaCategoryAnalysis {
       // Final Merge: If Article is in Cat A (Arts) and Cat B (History)
       .reduceByKey(_ ++ _)
 
-    printf("Mapped a total of %d articles out of %d category links.\n", finalPageRoots.count(), categoryLinksRDD.count())
+    printf(
+      "Mapped a total of %d articles out of %d category links.\n",
+      finalPageRoots.count(),
+      categoryLinksRDD.count()
+    )
+    categoryLinksRDD.unpersist()
 
-    finalPageRoots
+    val categoryRoots = allAssignments
+      .mapPartitions { iter =>
+        val lookup = catToRootsBc.value
+        iter.map { case (ltId, (pageId, _)) => (pageId, lookup(ltId)) }
+      }
+      .distinct() // One entry per (pageId, categorySet)
+
+    allAssignments.unpersist()
+
+    finalPageRoots.union(categoryRoots)
+
   }
 
   // ========== MAIN ==========
@@ -311,9 +347,13 @@ object wikipediaCategoryAnalysis {
       .set("spark.driver.memory", "4g")
 
     val sc = new SparkContext(conf)
-    sc.setLogLevel("WARN")
+    sc.setLogLevel("ERROR")
 
-    // PATHS to your new LZ4 files
+    sc.setCheckpointDir("checkpoints")
+
+    Logger.getLogger("org.apache.spark.storage.MemoryStore").setLevel(Level.ERROR)
+    Logger.getLogger("org.apache.spark.storage.BlockManager").setLevel(Level.ERROR)
+
     val linktarget_path    = "dataset/categories_dumps/enwiki-20251201-linktarget.sql.bz2"
     val categorylinks_path = "dataset/categories_dumps/enwiki-20251201-categorylinks.sql.bz2"
     val page_path          = "dataset/categories_dumps/enwiki-20251201-page.sql.bz2"
