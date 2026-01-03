@@ -113,8 +113,7 @@ object wikipediaCategoryAnalysis {
 
   // ========== JOB 1: PARSE LINKTARGET ==========
 
-  private def parseLinktarget(sc: SparkContext, linktarget_path: String): RDD[LinkTarget] = {
-
+  private def parseLinktarget(sc: SparkContext, linktarget_path: String): RDD[LinkTarget] =
     // Schema: (lt_id, lt_namespace, lt_title) -> Indices 0, 1, 2
 
     sc.textFile(linktarget_path)
@@ -129,15 +128,13 @@ object wikipediaCategoryAnalysis {
         }
       }
       .map(row => LinkTarget(row(0).toInt, row(1).toInt, row(2)))
-  }
 
   // ========== JOB 2: PARSE CATEGORYLINKS ==========
 
   private def parseCategorylinks(
     sc: SparkContext,
     categorylinks_path: String
-  ): RDD[CategoryLink] = {
-
+  ): RDD[CategoryLink] =
     // Schema: (cl_from, cl_sortkey, cl_timestamp, prefix, cl_type, collation, cl_target_id)
     // Indices: 0, 1, 2, 3, 4, 5, 6
     // We need: 0 (from), 4 (type), 6 (target_id)
@@ -156,12 +153,10 @@ object wikipediaCategoryAnalysis {
         }
       }
       .map(row => CategoryLink(row(0).toInt, row(4), row(6).toInt))
-  }
 
   // ========== JOB 3: PARSE PAGE ==========
 
-  private def parsePage(sc: SparkContext, page_path: String): RDD[Page] = {
-
+  private def parsePage(sc: SparkContext, page_path: String): RDD[Page] =
     // Schema: (page_id, page_namespace, page_title, ...) -> Indices 0, 1, 2
 
     sc.textFile(page_path)
@@ -176,11 +171,12 @@ object wikipediaCategoryAnalysis {
         }
       }
       .map(row => Page(row(0).toInt, row(2)))
-  }
 
   // ---------------------------------------------------------------------------
   // JOB 4: Identify Root Categories (Children of "Main_topic_classifications")
   // ---------------------------------------------------------------------------
+  // Finds all categories directly under "Main_topic_classifications"
+  // Returns Map of (LinkTargetID -> CategoryName)
   private def identifyRootCategories(
     ltRDD: RDD[LinkTarget],
     clRDD: RDD[CategoryLink],
@@ -191,16 +187,18 @@ object wikipediaCategoryAnalysis {
     val mainTopicId   = ltRDD.filter(_.lt_title == mainTopicName).map(_.lt_id).collect().head
     println(s"Identified Main Topic Category: $mainTopicName (linktarget ID: $mainTopicId)")
 
-    val roots = clRDD
-      .filter(cl => cl.cl_target_id == mainTopicId)
-      .map(cl => (cl.cl_from, cl.cl_target_id))
+    val rootsId = clRDD
+      .filter(cl => cl.cl_target_id == mainTopicId && cl.cl_type == "subcat")
+      .map(cl => cl.cl_from).collect()
 
+    val rootsName = pgRDD
+      .filter(pg => rootsId.contains(pg.page_id))
+      .map(_.page_title)
+      .collect()
 
-    val rootNames = pgRDD.map(pg => (pg.page_id, pg.page_title))
-
-    roots
-      .join(rootNames)
-      .map { case (rootId, (_, rootName)) => (rootId, rootName) }
+    ltRDD
+      .filter(lt => rootsName.contains(lt.lt_title))
+      .map(lt => (lt.lt_id, lt.lt_title))
       .collect()
       .toMap
   }
@@ -216,30 +214,44 @@ object wikipediaCategoryAnalysis {
     sc: SparkContext
   ): RDD[(Int, Set[String])] = {
 
+    pageRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+    categoryLinksRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+    // linkTargetRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
     // A. Identify Roots
     val rootMap = identifyRootCategories(linkTargetRDD, categoryLinksRDD, pageRDD)
-    println(s"Roots: ${rootMap.values.mkString(", ")}")
+    println(s"Roots: ${rootMap.mkString(", ")}")
+    // linkTargetRDD.unpersist()
+    pageRDD.unpersist()
 
     // B. Propagate on Category Skeleton (Iterative)
     val skeleton = categoryLinksRDD
       .filter(_.cl_type == "subcat")
       .map(cl => (cl.cl_target_id, cl.cl_from))
-      .persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
 
-    var activeFrontier = sc.parallelize(rootMap.toSeq) // (CatID, RootLabel)
+
+    skeleton.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+    val skellyCount = skeleton.count()
+
+    printf("Category Skeleton has %d edges.\n", skellyCount)
+
+    var activeFrontier = sc.parallelize(rootMap.toSeq) // (LinkTargetId, RootLabel)
     var allAssignments = activeFrontier
 
     var iteration = 0
-    var count     = 1L
+    var count     = rootMap.size.toLong
+    println("Entering iterative label propagation...")
 
     while (count > 0 && iteration < 20) {
       iteration += 1
+      printf(" Iteration %d: Active Frontier Size = %d\n", iteration, count)
+      // activeFrontier.foreach(cat => printf("  Category %d assigned labels: %s\n", cat._1, cat._2))
 
       val nextStep = activeFrontier
         .join(skeleton)
         .map { case (_, (label, childId)) => (childId, label) }
         .distinct()
 
+      activeFrontier.unpersist()
       activeFrontier = nextStep.subtract(allAssignments)
       activeFrontier.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
 
@@ -247,6 +259,8 @@ object wikipediaCategoryAnalysis {
       if (count > 0)
         allAssignments = allAssignments.union(activeFrontier)
     }
+
+    printf("Completed a total of %d categories of %d total.\n", allAssignments.count(), skellyCount)
 
     skeleton.unpersist()
 
@@ -280,6 +294,8 @@ object wikipediaCategoryAnalysis {
       }
       // Final Merge: If Article is in Cat A (Arts) and Cat B (History)
       .reduceByKey(_ ++ _)
+
+    printf("Mapped a total of %d articles out of %d category links.\n", finalPageRoots.count(), categoryLinksRDD.count())
 
     finalPageRoots
   }
