@@ -1,6 +1,8 @@
-import org.apache.log4j.{ Level, Logger }
+import helper.RootMapping
+import org.apache.log4j.{Level, Logger}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.{ SparkConf, SparkContext }
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.{SparkConf, SparkContext}
 
 import scala.collection.mutable
 import scala.util.Try
@@ -210,6 +212,7 @@ object wikipediaCategoryAnalysis {
   // ---------------------------------------------------------------------------
   @SuppressWarnings(Array("org.wartremover.warts.While"))
   private def buildPageToRootsMap(
+    K: Int, // Max number of roots per article/category
     linkTargetRDD: RDD[LinkTarget],
     categoryLinksRDD: RDD[CategoryLink],
     pageRDD: RDD[Page],
@@ -217,13 +220,46 @@ object wikipediaCategoryAnalysis {
   ): RDD[(Int, Set[String])] = {
 
 
-    pageRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
-    categoryLinksRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+    pageRDD.persist(StorageLevel.MEMORY_AND_DISK)
+    categoryLinksRDD.persist(StorageLevel.MEMORY_AND_DISK)
     // linkTargetRDD.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
     // A. Identify Roots
     val rootMap = identifyRootCategories(linkTargetRDD, categoryLinksRDD, pageRDD)
     println(s"Roots: ${rootMap.mkString(", ")}")
     // linkTargetRDD.unpersist()
+
+    type RootMask = Long
+    val rootIdx: Map[Int, Int] = rootMap.keys.zipWithIndex.toMap // rootLtId -> 0..N-1
+    sc.parallelize(rootIdx.map { case (ltId, idx) => s"$ltId\t$idx"}.toSeq).saveAsTextFile("output/root_category_indices.tsv")
+
+    @inline def maskOf(idx: Int): RootMask = 1L << idx
+
+    @inline def bitCount(m: RootMask): Int   = java.lang.Long.bitCount(m)
+    @inline def isFull(m: RootMask): Boolean = bitCount(m) >= K
+
+    val idxToName: Array[String] = {
+      val byIdx = rootIdx.toSeq.sortBy(_._2) // (ltId, idx) sorted by idx
+      byIdx.map { case (ltId, _) => rootMap(ltId)._2 }.toArray
+    }
+
+    def decode(mask: RootMask): Set[String] = {
+      var i   = 0
+      var acc = Set.empty[String]
+      val max = idxToName.length
+      while (i < max) {
+        if ((mask & (1L << i)) != 0L)
+          acc += idxToName(i)
+        i += 1
+      }
+      acc
+    }
+
+    def mergeMasks(m1: RootMask, m2: RootMask): RootMask = {
+      val combined = m1 | m2
+      if (bitCount(combined) <= K) combined
+      else m1 // or m2, or some deterministic subset logic
+    }
+
 
     val pg       = pageRDD.map(pg => (pg.page_id, pg.page_title))
     val lt       = linkTargetRDD.map(lt => (lt.lt_title, lt.lt_id))
@@ -236,45 +272,85 @@ object wikipediaCategoryAnalysis {
       .join(lt)
       .map { case (_, ((page_id, targetId), page_LtId)) => (targetId, (page_id, page_LtId)) }
 // Skeleton: (Parent_LtId, (Page_Id, Page_LtId))
+
     pageRDD.unpersist()
 
-    skeleton.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+    skeleton.persist(StorageLevel.MEMORY_AND_DISK)
     val skellyCount = skeleton.count()
 
     printf("Category Skeleton has %d edges.\n", skellyCount)
 
-    var activeFrontier = sc.parallelize(rootMap.toSeq) // (LinkTargetId,(page_id, RootLabel))
+    var activeFrontier: RDD[(Int, (Int, RootMask))] = sc.parallelize(
+      rootMap.toSeq.map { case (ltId, (pageId, _)) => (ltId, (pageId, maskOf(rootIdx(ltId)))) }
+    )
+
     var allAssignments = activeFrontier
 
     var iteration = 0
     var count     = rootMap.size.toLong
     println("Entering iterative label propagation...")
 
+    // allAssignments: RDD[(ltId, (pageId, mask))]
+    // skeleton:       RDD[(ltId, (childPageId, childLtId))]
+
     while (count > 0 && iteration < 20) {
       iteration += 1
       printf(" Iteration %d: Active Frontier Size = %d\n", iteration, count)
-      // activeFrontier.foreach(cat => printf("  Category %d assigned labels: %s\n", cat._1, cat._2))
 
-      val nextStep = activeFrontier
-        .join(skeleton)
-        .map { case (_, ((_, root_label), (page_id, page_ltId))) =>
-          (page_ltId, (page_id, root_label))
+      // 1) Propagate one step
+      val propagated = activeFrontier
+        .join(skeleton) // (ltId, ((pageId, mask), (childPageId, childLtId)))
+        .map { case (_, ((_, parentMask), (childPageId, childLtId))) =>
+          (childLtId, (childPageId, parentMask))
         }
-        .distinct()
+        .coalesce(256)
 
+      val updated = propagated
+        .leftOuterJoin(allAssignments) // (ltId, ((pageId, newMask), optExisting))
+        .flatMap { case (ltId, ((pageId, newMask), optExisting)) =>
+          optExisting match {
+            // Node already has some roots
+            case Some((_, existingMask)) =>
+              // If already full, ignore any new roots
+              if (isFull(existingMask)) {
+                List.empty[(Int, (Int, RootMask))]
+              } else {
+                val combined = existingMask | newMask
+                // If nothing new, or we exceed K, skip
+                if (combined == existingMask || bitCount(combined) > K)
+                  List.empty[(Int, (Int, RootMask))]
+                else
+                  List((ltId, (pageId, combined)))
+              }
+            case None                    => // brand-new node
+              List((ltId, (pageId, newMask)))
+          }
+        }
       activeFrontier.unpersist()
-      activeFrontier = nextStep.subtract(allAssignments)
+      activeFrontier = updated
       activeFrontier.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
 
       count = activeFrontier.count()
-      if (count > 0)
-        allAssignments = allAssignments.union(activeFrontier)
+      if (count > 0) {
+        // Merge into allAssignments, 1 row per ltId
+        val merged = allAssignments
+          .union(activeFrontier)
+          .coalesce(256) // Reduce shuffle partitions
+          .reduceByKey { case ((pageId1, m1), (_, m2)) =>
+            (pageId1, mergeMasks(m1, m2))
+          }
 
-      if (iteration % 3 == 0) {
-        printf("  → Checkpointing at iteration %d...\n", iteration)
-        allAssignments.checkpoint()
-        allAssignments.count()  // Force materialization
-        printf("  ✓ Checkpoint complete\n")
+        allAssignments = merged
+
+        if (iteration % 3 == 0) {
+          printf("  → Checkpointing at iteration %d...\n", iteration)
+          val cp = allAssignments
+          cp.checkpoint()
+          cp.count() // materialize checkpoint
+
+          allAssignments = cp // rebind to short-lineage RDD
+          printf("  ✓ Checkpoint complete\n")
+        }
       }
     }
     activeFrontier.unpersist()
@@ -282,17 +358,13 @@ object wikipediaCategoryAnalysis {
     printf("Completed a total of %d categories of %d total.\n", allAssignments.count(), skellyCount)
 
     skeleton.unpersist()
-    allAssignments.persist(org.apache.spark.storage.StorageLevel.MEMORY_AND_DISK)
+    allAssignments.persist(StorageLevel.MEMORY_AND_DISK)
 
     // C. Collect Category->Roots Map to Driver (The Optimization)
     // We pre-aggregate here so the map is smaller (CatID -> Set[Roots])
     println("Collecting category labels for Broadcast...")
     val catToRootsLocal = allAssignments
       .map { case (ltId, (_, cat)) => (ltId, cat) }
-      .aggregateByKey(Set.empty[String])(
-        (set, label) => set + label,
-        (set1, set2) => set1 ++ set2
-      )
       .collectAsMap() // Brings ~200-400MB to Driver
 
     val catToRootsBc = sc.broadcast(catToRootsLocal)
@@ -308,7 +380,7 @@ object wikipediaCategoryAnalysis {
           // cl.cl_target_id is the Parent Category
           // Check if this parent has any Root Labels
           lookup.get(cl.cl_target_id) match {
-            case Some(roots) => List((cl.cl_from, roots)) // (ArticleID, Set[Roots])
+            case Some(roots) => List((cl.cl_from, decode(roots))) // (ArticleID, Set[Roots])
             case None        => Nil
           }
         }
@@ -319,16 +391,14 @@ object wikipediaCategoryAnalysis {
     printf(
       "Mapped a total of %d articles out of %d category links.\n",
       finalPageRoots.count(),
-      categoryLinksRDD.count()
+      categoryLinksRDD.filter(_.cl_type == "page").count()
     )
     categoryLinksRDD.unpersist()
 
-    val categoryRoots = allAssignments
-      .mapPartitions { iter =>
-        val lookup = catToRootsBc.value
-        iter.map { case (ltId, (pageId, _)) => (pageId, lookup(ltId)) }
-      }
-      .distinct() // One entry per (pageId, categorySet)
+    // B) Category-side mapping from allAssignments (ltId → pageId, mask)
+    val categoryRoots: RDD[(Int, Set[String])] = allAssignments
+      .map { case (_, (pageId, mask)) => (pageId, decode(mask)) }
+      .reduceByKey(_ ++ _)
 
     allAssignments.unpersist()
 
@@ -345,6 +415,10 @@ object wikipediaCategoryAnalysis {
       .setMaster("local[*]")
       .set("spark.executor.memory", "4g")
       .set("spark.driver.memory", "4g")
+      .set("spark.shuffle.manager", "sort")
+      .set("spark.shuffle.compress", "true")
+      .set("spark.shuffle.spill.compress", "true")
+      .set("spark.io.compression.codec", "lz4")
 
     val sc = new SparkContext(conf)
     sc.setLogLevel("ERROR")
@@ -361,24 +435,21 @@ object wikipediaCategoryAnalysis {
     try {
       // 1. Load Data
       val linktarget    = parseLinktarget(sc, linktarget_path)
-      // val checklt       = linktarget.count()
-      // println(s"✓ LinkTarget parsed with $checklt entries.")
       val categorylinks = parseCategorylinks(sc, categorylinks_path)
-      // val checkcl       = categorylinks.count()
-      // println(s"✓ CategoryLinks parsed with $checkcl entries.")
       val page          = parsePage(sc, page_path)
-      // val checkp        = page.count()
-      // println(s"✓ Page parsed with $checkp entries.")
+
 
       // 2. Build Graph
-      val hierarchy = buildPageToRootsMap(linktarget, categorylinks, page, sc)
-      val sample    = hierarchy.take(20)
-      println("\nSample Page to Root Categories Mapping:")
-      sample.foreach { case (pageId, roots) =>
-        println(s"Page ID: $pageId -> Roots: ${roots.mkString(", ")}")
-      }
+      val hierarchy = buildPageToRootsMap(3, linktarget, categorylinks, page, sc)
 
-      // 4. (Optional) Run PageRank or other analysis here...
+      //val sample    = hierarchy.take(20)
+      //println("\nSample Page to Root Categories Mapping:")
+      //sample.foreach { case (pageId, roots) =>
+      //  println(s"Page ID: $pageId -> Roots: ${roots.mkString(", ")}")
+      //}
+
+
+      // 3. Save Results
 
     } finally sc.stop()
   }
