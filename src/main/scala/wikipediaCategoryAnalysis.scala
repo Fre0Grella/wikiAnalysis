@@ -1,14 +1,21 @@
-import helper.RootMapping
-import org.apache.log4j.{Level, Logger}
+import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{ SparkConf, SparkContext }
+import org.apache.hadoop.fs.{ FileSystem, FileStatus, Path }
+import org.apache.hadoop.conf.Configuration
 
-import scala.collection.mutable
 import scala.util.Try
 
 //noinspection ZeroIndexToHead
 object wikipediaCategoryAnalysis {
+
+  // ================= CONSTANTS ==========
+  val bannedCategories: Set[String] = Set(
+    "History",
+    "Humanities",
+    "Time",
+  )
 
   // ========== TYPES ==========
 
@@ -25,6 +32,36 @@ object wikipediaCategoryAnalysis {
   // HierarchyNode: (ID, Title, Children_IDs)
   case class HierarchyNode(page_id: Int, page_title: String, childs_id: Set[Int])
 
+  // ========== HELPER FUNCTIONS ==========
+  @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
+  private def saveSingleTextFile(
+    rdd: RDD[String],
+    dirPath: String,
+    finalFile: String
+  ): Unit = {
+    rdd
+      .coalesce(1)
+      .saveAsTextFile(dirPath)
+
+    val conf = new Configuration()
+    val fs   = FileSystem.get(conf)
+
+    val srcDir   = new Path(dirPath)
+    val statuses = fs.listStatus(srcDir)
+
+    val partPath =
+      statuses
+        .map(_.getPath)
+        .find(_.getName.startsWith("part-"))
+        .get
+
+    val dstPath = new Path(finalFile)
+
+    if (fs.exists(dstPath))
+      fs.delete(dstPath, true)
+    fs.rename(partPath, dstPath)
+    fs.delete(srcDir, true)
+  }
   // ========== PARSING LOGIC ==========
 
   /** Robust parser for Splittable LZ4 SQL Dumps. Handles:
@@ -203,9 +240,12 @@ object wikipediaCategoryAnalysis {
       .map(lt => (lt.lt_title, lt.lt_id))
       .join(rootsName)
       .map { case (title, (lt_id, page_id)) => (lt_id, (page_id, title)) }
+      .filter { case (_, (_, title)) => !bannedCategories.contains(title) }
       .collect()
       .toMap
   }
+
+  type RootMask = Long
 
   // ---------------------------------------------------------------------------
   // JOB 5: Propagate Labels and Assign to Articles (Optimized with Broadcast)
@@ -217,8 +257,7 @@ object wikipediaCategoryAnalysis {
     categoryLinksRDD: RDD[CategoryLink],
     pageRDD: RDD[Page],
     sc: SparkContext
-  ): RDD[(Int, Set[String])] = {
-
+  ): RDD[(Int, RootMask)] = {
 
     pageRDD.persist(StorageLevel.MEMORY_AND_DISK)
     categoryLinksRDD.persist(StorageLevel.MEMORY_AND_DISK)
@@ -228,38 +267,32 @@ object wikipediaCategoryAnalysis {
     println(s"Roots: ${rootMap.mkString(", ")}")
     // linkTargetRDD.unpersist()
 
-    type RootMask = Long
     val rootIdx: Map[Int, Int] = rootMap.keys.zipWithIndex.toMap // rootLtId -> 0..N-1
-    sc.parallelize(rootIdx.map { case (ltId, idx) => s"$ltId\t$idx"}.toSeq).saveAsTextFile("output/root_category_indices.tsv")
+
+    val indices = sc
+      .parallelize(
+        rootMap
+          .keySet
+          .intersect(rootIdx.keySet)
+          .map(k => k -> (rootMap(k), rootIdx(k)))
+          .toSeq
+      )
+      .map { case (_, ((pageId, title), idx)) => s"$pageId\t$title\t$idx" }
+
+    saveSingleTextFile(indices, "tmp/root_category_indices_tmp", "output/root_category_indices.tsv")
 
     @inline def maskOf(idx: Int): RootMask = 1L << idx
 
     @inline def bitCount(m: RootMask): Int   = java.lang.Long.bitCount(m)
     @inline def isFull(m: RootMask): Boolean = bitCount(m) >= K
 
-    val idxToName: Array[String] = {
-      val byIdx = rootIdx.toSeq.sortBy(_._2) // (ltId, idx) sorted by idx
-      byIdx.map { case (ltId, _) => rootMap(ltId)._2 }.toArray
-    }
-
-    def decode(mask: RootMask): Set[String] = {
-      var i   = 0
-      var acc = Set.empty[String]
-      val max = idxToName.length
-      while (i < max) {
-        if ((mask & (1L << i)) != 0L)
-          acc += idxToName(i)
-        i += 1
-      }
-      acc
-    }
-
     def mergeMasks(m1: RootMask, m2: RootMask): RootMask = {
       val combined = m1 | m2
-      if (bitCount(combined) <= K) combined
-      else m1 // or m2, or some deterministic subset logic
+      if (bitCount(combined) <= K)
+        combined
+      else
+        m1 // or m2, or some deterministic subset logic
     }
-
 
     val pg       = pageRDD.map(pg => (pg.page_id, pg.page_title))
     val lt       = linkTargetRDD.map(lt => (lt.lt_title, lt.lt_id))
@@ -336,9 +369,7 @@ object wikipediaCategoryAnalysis {
         val merged = allAssignments
           .union(activeFrontier)
           .coalesce(256) // Reduce shuffle partitions
-          .reduceByKey { case ((pageId1, m1), (_, m2)) =>
-            (pageId1, mergeMasks(m1, m2))
-          }
+          .reduceByKey { case ((pageId1, m1), (_, m2)) => (pageId1, mergeMasks(m1, m2)) }
 
         allAssignments = merged
 
@@ -380,14 +411,12 @@ object wikipediaCategoryAnalysis {
           // cl.cl_target_id is the Parent Category
           // Check if this parent has any Root Labels
           lookup.get(cl.cl_target_id) match {
-            case Some(roots) => List((cl.cl_from, decode(roots))) // (ArticleID, Set[Roots])
+            case Some(roots) => List((cl.cl_from, roots)) // (ArticleID, Set[Roots])
             case None        => Nil
           }
         }
       }
-      // Final Merge: If Article is in Cat A (Arts) and Cat B (History)
-      .reduceByKey(_ ++ _)
-
+      .reduceByKey(mergeMasks)
     printf(
       "Mapped a total of %d articles out of %d category links.\n",
       finalPageRoots.count(),
@@ -396,15 +425,24 @@ object wikipediaCategoryAnalysis {
     categoryLinksRDD.unpersist()
 
     // B) Category-side mapping from allAssignments (ltId → pageId, mask)
-    val categoryRoots: RDD[(Int, Set[String])] = allAssignments
-      .map { case (_, (pageId, mask)) => (pageId, decode(mask)) }
-      .reduceByKey(_ ++ _)
+    val categoryRoots: RDD[(Int, RootMask)] = allAssignments
+      .map { case (_, (pageId, mask)) => (pageId, mask) }
+      .reduceByKey(mergeMasks)
 
     allAssignments.unpersist()
 
-    finalPageRoots.union(categoryRoots)
+    finalPageRoots.union(categoryRoots) reduceByKey mergeMasks
 
   }
+
+  def saveOutputs(
+    pageToRootsRDD: RDD[(Int, RootMask)],
+    outputPath: String
+  ): Unit =
+    // Save as TSV: page_id \t root1,root2,...
+    pageToRootsRDD
+      .map { case (pageId, mask) => s"$pageId\t$mask" }
+      .saveAsTextFile(outputPath)
 
   // ========== MAIN ==========
 
@@ -438,19 +476,61 @@ object wikipediaCategoryAnalysis {
       val categorylinks = parseCategorylinks(sc, categorylinks_path)
       val page          = parsePage(sc, page_path)
 
-
       // 2. Build Graph
       val hierarchy = buildPageToRootsMap(3, linktarget, categorylinks, page, sc)
 
-      //val sample    = hierarchy.take(20)
-      //println("\nSample Page to Root Categories Mapping:")
-      //sample.foreach { case (pageId, roots) =>
-      //  println(s"Page ID: $pageId -> Roots: ${roots.mkString(", ")}")
-      //}
-
-
       // 3. Save Results
+      saveOutputs(hierarchy, "output/page_to_root_categories")
+
+      val sample = hierarchy.take(20)
+      println("\nSample Page to Root Categories Mapping:")
+
+      val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc)
+      sample.foreach { case (pageId, roots) =>
+        println(s"Page ID: $pageId -> Roots: ${decoder.decode(roots).mkString(", ")}")
+      }
 
     } finally sc.stop()
+  }
+}
+
+// In your analytics module, reused across runs
+@SuppressWarnings(Array("org.wartremover.warts.While"))
+final case class RootDecoder(idxToName: Vector[String]) {
+  private type RootMask = Long
+
+  def decode(mask: RootMask): Set[String] = {
+    var i   = 0
+    var acc = Set.empty[String]
+    val max = idxToName.length
+    while (i < max) {
+      if ((mask & (1L << i)) != 0L)
+        acc += idxToName(i)
+      i += 1
+    }
+    acc
+  }
+}
+
+object RootDecoder {
+  // TSV: pageId \t title \t idx
+  @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
+  def fromTsv(path: String)(sc: SparkContext): RootDecoder = {
+    val lines = sc.textFile(path)
+    val pairs =
+      lines
+        .map { line =>
+          val Array(_, title, idxStr) = line.split("\t", 3)
+          (idxStr.toInt, title)
+        }
+        .collect()
+        .toSeq
+
+    val maxIdx    = pairs.map(_._1).max
+    val idxToName = Array.fill[String](maxIdx + 1)("")
+
+    pairs.foreach { case (i, name) => idxToName(i) = name }
+
+    RootDecoder(idxToName.toVector)
   }
 }
