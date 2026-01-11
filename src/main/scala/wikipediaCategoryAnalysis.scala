@@ -1,11 +1,11 @@
-import org.apache.log4j.{ Level, Logger }
+import org.apache.log4j.{Level, Logger}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.{ SparkConf, SparkContext }
-import org.apache.hadoop.fs.{ FileSystem, FileStatus, Path }
+import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.apache.hadoop.conf.Configuration
 
-import scala.util.Try
+import scala.util.{Random, Try}
 
 //noinspection ZeroIndexToHead
 object wikipediaCategoryAnalysis {
@@ -461,7 +461,7 @@ object wikipediaCategoryAnalysis {
       .set("spark.io.compression.codec", "lz4")
 
     val sc = new SparkContext(conf)
-    sc.setLogLevel("ERROR")
+    sc.setLogLevel("WARN")
 
     sc.setCheckpointDir("checkpoints")
 
@@ -484,7 +484,8 @@ object wikipediaCategoryAnalysis {
       // 3. Save Results
       saveOutputs(hierarchy, "output/page_to_root_categories")
 
-      val sample = hierarchy.take(20)
+      val sample = hierarchy.takeSample(withReplacement = false, 20, Random.nextLong())
+
       println("\nSample Page to Root Categories Mapping:")
 
       val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc)
