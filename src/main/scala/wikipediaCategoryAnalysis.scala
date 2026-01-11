@@ -15,6 +15,8 @@ object wikipediaCategoryAnalysis {
     "History",
     "Humanities",
     "Time",
+    "Life",
+    "Behavior",
   )
 
   // ========== TYPES ==========
