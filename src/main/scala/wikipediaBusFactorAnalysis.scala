@@ -1,3 +1,4 @@
+import org.apache.log4j.{Level, Logger}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.storage.StorageLevel
 
@@ -11,46 +12,45 @@ object wikipediaBusFactorAnalysis {
 
     val conf = new SparkConf().setAppName("Wikipedia Bus Factor")
     val sc   = new SparkContext(conf)
+    println("======Starting Wikipedia Bus Factor Analysis Job======")
 
     sc.setLogLevel("WARN")
 
-    println("Loading page to categories mapping...")
+
+    Logger.getLogger("org.apache.spark.storage.MemoryStore").setLevel(Level.ERROR)
+    Logger.getLogger("org.apache.spark.storage.BlockManager").setLevel(Level.ERROR)
+
+
+    //println("Loading page to categories mapping...")
     val categories    = sc.textFile("output/page_to_root_categories/part-*")
     val articleTopics = categories
       .map(_.split("\t"))
-      .map(data => (data(0).toInt, data(1).toLong))
+      .map(data => (data(0).toLong, data(1).toLong))
       .persist(StorageLevel.MEMORY_AND_DISK)
 
-    printf("Total Articles with Categories: %d\n", articleTopics.count())
+    //printf("Total Articles with Categories: %d\n", articleTopics.count())
 
     println("Loading user contributions...")
     val historyDump       = sc.textFile("dataset/wikimedia_dumps/*.tsv.bz2")
+   // println(s"Raw history lines: ${historyDump.count()}")
     val filteredInput = historyDump
-      .map(_.split("\t"))
+      .map(_.split("\t",-1))
       .filter(filterEvent)
-      .persist(StorageLevel.MEMORY_AND_DISK)
-
-    filteredInput
       .map(data =>
         (
-          data(p.idx("page_id")),
+          data(p.idx("page_id")).toLong,
           data(p.idx("page_title")),
           data(p.idx("event_user_text")),
           data(p.idx("revision_text_bytes_diff"))
         ))
-      .takeSample(withReplacement = false, 100, Random.nextLong())
+
+      filteredInput
+      .takeSample(withReplacement = false, 10, Random.nextLong())
       .foreach(s => printf("Sample Contribution: %s\n",s.toString() ))
 
 
 
-    val userContributions = filteredInput.map(data =>
-        (
-          data(p.idx("page_id")).toInt,
-          data(p.idx("page_title")),
-          data(p.idx("event_user_text")),
-          data(p.idx("revision_text_bytes_diff"))
-        )
-      )
+    val userContributions = filteredInput
       .keyBy{case (page_id, _, _, _) => page_id}
       .join(articleTopics)
     val data              = userContributions.take(100)
@@ -59,13 +59,14 @@ object wikipediaBusFactorAnalysis {
   }
 
   private def filterEvent(data: Array[String]): Boolean =
-    data(p.idx("event_entity")) != "revision" &&
-      data(p.idx("event_type")) != "create" &&
-      data(p.idx("page_namespace")) != "0" &&
-      data(p.idx("event_user_is_bot_by")) != ""
+      data(p.idx("event_entity")) == "revision" &&      // KEEP revisions
+      //data(p.idx("event_type")) == "create" &&          // KEEP creates
+      //data(p.idx("page_namespace")) == "0" &&           // KEEP main namespace (articles)
+      //data(p.idx("user_is_bot_by")).isEmpty &&
+      data(p.idx("page_id")) != ""                   // KEEP rows with page_id
+
 
   def main(args: Array[String]): Unit = {
-    println("======Starting Wikipedia Bus Factor Analysis Job======")
     bus(args)
   }
 }
