@@ -1,11 +1,11 @@
-import org.apache.log4j.{Level, Logger}
+import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
+import org.apache.spark.{ SparkConf, SparkContext }
+import org.apache.hadoop.fs.{ FileStatus, FileSystem, Path }
 import org.apache.hadoop.conf.Configuration
 
-import scala.util.{Random, Try}
+import scala.util.{ Random, Try }
 
 //noinspection ZeroIndexToHead
 object wikipediaCategoryAnalysis {
@@ -513,6 +513,23 @@ final case class RootDecoder(idxToName: Vector[String]) {
     }
     acc
   }
+
+  def categoriesFromMask(mask: Long): Set[Int] = {
+    var m   = mask
+    var bit = 0
+    var res = Set.empty[Int]
+
+    while (m != 0L && bit < 64) {
+      if ((m & 1L) != 0L)
+        res += bit
+      m = m >>> 1
+      bit += 1
+    }
+    res
+  }
+
+  def idToString(id: Int): String = idxToName(id)
+
 }
 
 object RootDecoder {
