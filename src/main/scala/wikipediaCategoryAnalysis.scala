@@ -452,9 +452,6 @@ object wikipediaCategoryAnalysis {
 
     val conf = new SparkConf()
       .setAppName("WikipediaCategoryAnalysis")
-      .setMaster("local[*]")
-      .set("spark.executor.memory", "4g")
-      .set("spark.driver.memory", "4g")
       .set("spark.shuffle.manager", "sort")
       .set("spark.shuffle.compress", "true")
       .set("spark.shuffle.spill.compress", "true")
