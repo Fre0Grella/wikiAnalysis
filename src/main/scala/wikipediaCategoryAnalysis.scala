@@ -4,6 +4,7 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{ SparkConf, SparkContext }
 import org.apache.hadoop.fs.{ FileStatus, FileSystem, Path }
 import org.apache.hadoop.conf.Configuration
+import utils.Commons
 
 import scala.util.{ Random, Try }
 
@@ -11,7 +12,7 @@ import scala.util.{ Random, Try }
 object wikipediaCategoryAnalysis {
 
   // ================= CONSTANTS ==========
-  val bannedCategories: Set[String] = Set(
+  private val bannedCategories: Set[String] = Set(
     "History",
     "Humanities",
     "Time",
@@ -37,10 +38,18 @@ object wikipediaCategoryAnalysis {
   // ========== HELPER FUNCTIONS ==========
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   private def saveSingleTextFile(
+    deploymentMode: String,
     rdd: RDD[String],
     dirPath: String,
     finalFile: String
   ): Unit = {
+
+    if (deploymentMode == "remote") {
+      rdd
+        .coalesce(1)
+        .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath))
+      return
+    }
     rdd
       .coalesce(1)
       .saveAsTextFile(dirPath)
@@ -155,10 +164,14 @@ object wikipediaCategoryAnalysis {
 
   // ========== JOB 1: PARSE LINKTARGET ==========
 
-  private def parseLinktarget(sc: SparkContext, linktarget_path: String): RDD[LinkTarget] =
+  private def parseLinktarget(
+    sc: SparkContext,
+    deploymentMode: String,
+    linktarget_path: String
+  ): RDD[LinkTarget] =
     // Schema: (lt_id, lt_namespace, lt_title) -> Indices 0, 1, 2
 
-    sc.textFile(linktarget_path)
+    sc.textFile(Commons.getDatasetPath(deploymentMode, linktarget_path))
       .flatMap(line => extractSqlValues(line))
       .filter { row =>
         if (row.length < 3)
@@ -175,13 +188,14 @@ object wikipediaCategoryAnalysis {
 
   private def parseCategorylinks(
     sc: SparkContext,
+    deploymentMode: String,
     categorylinks_path: String
   ): RDD[CategoryLink] =
     // Schema: (cl_from, cl_sortkey, cl_timestamp, prefix, cl_type, collation, cl_target_id)
     // Indices: 0, 1, 2, 3, 4, 5, 6
     // We need: 0 (from), 4 (type), 6 (target_id)
 
-    sc.textFile(categorylinks_path)
+    sc.textFile(Commons.getDatasetPath(deploymentMode, categorylinks_path))
       .flatMap(line => extractSqlValues(line))
       .filter { row =>
         if (row.length < 7)
@@ -198,10 +212,10 @@ object wikipediaCategoryAnalysis {
 
   // ========== JOB 3: PARSE PAGE ==========
 
-  private def parsePage(sc: SparkContext, page_path: String): RDD[Page] =
+  private def parsePage(sc: SparkContext, deploymentMode: String, page_path: String): RDD[Page] =
     // Schema: (page_id, page_namespace, page_title, ...) -> Indices 0, 1, 2
 
-    sc.textFile(page_path)
+    sc.textFile(Commons.getDatasetPath(deploymentMode, page_path))
       .flatMap(line => extractSqlValues(line))
       .filter { row =>
         if (row.length < 3)
@@ -254,6 +268,7 @@ object wikipediaCategoryAnalysis {
   // ---------------------------------------------------------------------------
   @SuppressWarnings(Array("org.wartremover.warts.While"))
   private def buildPageToRootsMap(
+    deploymentMode: String,
     K: Int, // Max number of roots per article/category
     linkTargetRDD: RDD[LinkTarget],
     categoryLinksRDD: RDD[CategoryLink],
@@ -281,7 +296,12 @@ object wikipediaCategoryAnalysis {
       )
       .map { case (_, ((pageId, title), idx)) => s"$pageId\t$title\t$idx" }
 
-    saveSingleTextFile(indices, "tmp/root_category_indices_tmp", "output/root_category_indices.tsv")
+    saveSingleTextFile(
+      deploymentMode,
+      indices,
+      "output/root_category_indices",
+      "output/root_category_indices.tsv"
+    )
 
     @inline def maskOf(idx: Int): RootMask = 1L << idx
 
@@ -438,17 +458,24 @@ object wikipediaCategoryAnalysis {
   }
 
   def saveOutputs(
+    deploymentMode: String,
     pageToRootsRDD: RDD[(Int, RootMask)],
-    outputPath: String
+    outputPath: String,
   ): Unit =
     // Save as TSV: page_id \t root1,root2,...
     pageToRootsRDD
       .map { case (pageId, mask) => s"$pageId\t$mask" }
-      .saveAsTextFile(outputPath)
+      .saveAsTextFile(Commons.getDatasetPath(deploymentMode, outputPath))
 
   // ========== MAIN ==========
 
   def main(args: Array[String]): Unit = {
+
+    val deploymentMode =
+      if (args.length > 0)
+        args(0)
+      else
+        "local"
 
     val conf = new SparkConf()
       .setAppName("WikipediaCategoryAnalysis")
@@ -458,9 +485,11 @@ object wikipediaCategoryAnalysis {
       .set("spark.io.compression.codec", "lz4")
 
     val sc = new SparkContext(conf)
+    Commons.initializeSparkContext(deploymentMode, sc)
+    println("======Starting Wikipedia Category Analysis Job======")
     sc.setLogLevel("WARN")
 
-    sc.setCheckpointDir("checkpoints")
+    sc.setCheckpointDir(Commons.getDatasetPath(deploymentMode, "checkpoints"))
 
     Logger.getLogger("org.apache.spark.storage.MemoryStore").setLevel(Level.ERROR)
     Logger.getLogger("org.apache.spark.storage.BlockManager").setLevel(Level.ERROR)
@@ -471,21 +500,21 @@ object wikipediaCategoryAnalysis {
 
     try {
       // 1. Load Data
-      val linktarget    = parseLinktarget(sc, linktarget_path)
-      val categorylinks = parseCategorylinks(sc, categorylinks_path)
-      val page          = parsePage(sc, page_path)
+      val linktarget    = parseLinktarget(sc, deploymentMode, linktarget_path)
+      val categorylinks = parseCategorylinks(sc, deploymentMode, categorylinks_path)
+      val page          = parsePage(sc, deploymentMode, page_path)
 
       // 2. Build Graph
-      val hierarchy = buildPageToRootsMap(3, linktarget, categorylinks, page, sc)
+      val hierarchy = buildPageToRootsMap(deploymentMode, 3, linktarget, categorylinks, page, sc)
 
       // 3. Save Results
-      saveOutputs(hierarchy, "output/page_to_root_categories")
+      saveOutputs(deploymentMode, hierarchy, "output/page_to_root_categories")
 
       val sample = hierarchy.takeSample(withReplacement = false, 20, Random.nextLong())
 
       println("\nSample Page to Root Categories Mapping:")
 
-      val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc)
+      val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc, deploymentMode)
       sample.foreach { case (pageId, roots) =>
         println(s"Page ID: $pageId -> Roots: ${decoder.decode(roots).mkString(", ")}")
       }
@@ -532,8 +561,8 @@ final case class RootDecoder(idxToName: Vector[String]) {
 object RootDecoder {
   // TSV: pageId \t title \t idx
   @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
-  def fromTsv(path: String)(sc: SparkContext): RootDecoder = {
-    val lines = sc.textFile(path)
+  def fromTsv(path: String)(sc: SparkContext, deploymentMode: String): RootDecoder = {
+    val lines = sc.textFile(Commons.getDatasetPath(deploymentMode, path))
     val pairs =
       lines
         .map { line =>

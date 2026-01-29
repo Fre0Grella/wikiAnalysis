@@ -2,12 +2,12 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{ FileSystem, Path }
 import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
-import org.apache.spark.{ SparkConf, SparkContext }
 import org.apache.spark.storage.StorageLevel
+import org.apache.spark.{ SparkConf, SparkContext }
+import utils.Commons
 
 import scala.collection.mutable
-import scala.collection.mutable.PriorityQueue
-import scala.util.{ Random, Try }
+import scala.util.Try
 
 object wikipediaBusFactorAnalysis {
   private val p = new mediaWikiHistorySchema() // parser data schema
@@ -17,6 +17,12 @@ object wikipediaBusFactorAnalysis {
   )
   def main(args: Array[String]): Unit = {
 
+    val deploymentMode =
+      if (args.length > 0)
+        args(0)
+      else
+        "local"
+
     val conf = new SparkConf()
       .setAppName("Wikipedia Bus Factor")
       .setMaster("local[*]")
@@ -24,6 +30,7 @@ object wikipediaBusFactorAnalysis {
       .set("spark.driver.memory", "4g")
 
     val sc = new SparkContext(conf)
+    Commons.initializeSparkContext(deploymentMode, sc)
     println("======Starting Wikipedia Bus Factor Analysis Job======")
 
     sc.setLogLevel("WARN")
@@ -32,7 +39,7 @@ object wikipediaBusFactorAnalysis {
     Logger.getLogger("org.apache.spark.storage.BlockManager").setLevel(Level.ERROR)
 
     // println("Loading page to categories mapping...")
-    val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc)
+    val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc, deploymentMode)
 
     val categories    = sc.textFile("output/page_to_root_categories/part-*")
     val articleTopics = categories
@@ -116,6 +123,7 @@ object wikipediaBusFactorAnalysis {
     //      }
     //    }
     saveOutputs(
+      deploymentMode,
       busFactor,
       "output",
       sc
@@ -123,12 +131,13 @@ object wikipediaBusFactorAnalysis {
     busFactor.unpersist()
     println("Outputs saved to output/ directory.")
     println("======Wikipedia Bus Factor Analysis Job Completed======")
+    sc.stop()
   }
 
   private def filterEvent(data: Array[String]): Boolean = {
     val bitdiff = data(p.idx("revision_text_bytes_diff"))
-    data(p.idx("event_entity")) == "revision" && // KEEP revisions
-    data(p.idx("user_is_bot_by")).isEmpty && // FILTER out known bots
+    data(p.idx("event_entity")) == "revision" &&       // KEEP revisions
+    data(p.idx("user_is_bot_by")).isEmpty &&           // FILTER out known bots
     !data(p.idx("event_user_text")).contains("bot") && // FILTER out probable bots
     !data(p.idx("event_user_text")).contains("Bot") &&
     !data(p.idx("event_user_text")).contains("BOT") &&
@@ -138,11 +147,19 @@ object wikipediaBusFactorAnalysis {
 
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   def saveOutputs(
+    deploymentMode: String,
     result: RDD[(Int, (Int, Long, Array[(String, Long)]))],
     dirPath: String,
     sc: SparkContext
   ): Unit = {
-    val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc)
+    var decoder: RootDecoder = null
+    if (deploymentMode == "local") {
+      decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc, deploymentMode)
+
+    } else {
+      decoder = RootDecoder.fromTsv("output/root_category_indices/part-0*")(sc, deploymentMode)
+
+    }
 
     result
       .map { case (cat, (busFactor, totalBytes, _)) =>
@@ -150,7 +167,7 @@ object wikipediaBusFactorAnalysis {
         s"$catString\t$busFactor\t$totalBytes"
       }
       .coalesce(1)
-      .saveAsTextFile(s"$dirPath/bus_factor")
+      .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor"))
 
     result
       .flatMap { case (cat, (_, _, topContributors)) =>
@@ -158,31 +175,35 @@ object wikipediaBusFactorAnalysis {
         topContributors.map { case (user, bytes) => s"$catString\t$user\t$bytes" }
       }
       .coalesce(1)
-      .saveAsTextFile(s"$dirPath/top_contributors")
+      .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors"))
 
-    val conf = new Configuration()
-    val fs   = FileSystem.get(conf)
+    if (deploymentMode == "local") {
 
-    val srcDir  = new Path(dirPath + "/bus_factor")
-    val srcDir2 = new Path(dirPath + "/top_contributors")
-    singleFile(srcDir, "bus_factor.tsv")
-    singleFile(srcDir2, "top_contributors.tsv")
+      val conf = new Configuration()
+      val fs   = FileSystem.get(conf)
 
-    def singleFile(srcDir: Path, outputFileName: String): Unit = {
-      val statuses = fs.listStatus(srcDir)
+      val srcDir  = new Path(dirPath + "/bus_factor")
+      val srcDir2 = new Path(dirPath + "/top_contributors")
+      singleFile(srcDir, "bus_factor.tsv")
+      singleFile(srcDir2, "top_contributors.tsv")
 
-      val partPath =
-        statuses
-          .map(_.getPath)
-          .find(_.getName.startsWith("part-"))
-          .get
+      def singleFile(srcDir: Path, outputFileName: String): Unit = {
+        val statuses = fs.listStatus(srcDir)
 
-      val dstPath = new Path(s"output/$outputFileName")
+        val partPath =
+          statuses
+            .map(_.getPath)
+            .find(_.getName.startsWith("part-"))
+            .get
 
-      if (fs.exists(dstPath))
-        fs.delete(dstPath, true)
-      fs.rename(partPath, dstPath)
-      fs.delete(srcDir, true)
+        val dstPath = new Path(s"output/$outputFileName")
+
+        if (fs.exists(dstPath))
+          fs.delete(dstPath, true)
+        fs.rename(partPath, dstPath)
+        fs.delete(srcDir, true)
+
+      }
     }
   }
 
