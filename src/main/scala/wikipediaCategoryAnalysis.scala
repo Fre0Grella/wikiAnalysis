@@ -38,26 +38,24 @@ object wikipediaCategoryAnalysis {
   // ========== HELPER FUNCTIONS ==========
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   private def saveSingleTextFile(
-    deploymentMode: String,
     rdd: RDD[String],
     dirPath: String,
     finalFile: String
-  ): Unit = {
-
-    if (deploymentMode == "remote") {
-      rdd
-        .coalesce(1)
-        .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath))
+  )(implicit deploymentMode: String, writeRule: Int, sc: SparkContext): Unit = {
+    val finalFilePath = Commons.getDatasetPath(deploymentMode, finalFile)
+    val dirPathFull   = Commons.getDatasetPath(deploymentMode, dirPath)
+    if (writeRule == 1 && Commons.exists(sc, finalFilePath)) {
+      println(s"Output file $finalFile already exists. Skipping save as per write rule.")
       return
     }
+    Commons.deleteIfExists(sc, dirPathFull)
     rdd
       .coalesce(1)
-      .saveAsTextFile(dirPath)
+      .saveAsTextFile(dirPathFull)
 
-    val conf = new Configuration()
-    val fs   = FileSystem.get(conf)
-
-    val srcDir   = new Path(dirPath)
+    val conf     = new Configuration()
+    val fs       = FileSystem.get(conf)
+    val srcDir   = new Path(dirPathFull)
     val statuses = fs.listStatus(srcDir)
 
     val partPath =
@@ -66,12 +64,11 @@ object wikipediaCategoryAnalysis {
         .find(_.getName.startsWith("part-"))
         .get
 
-    val dstPath = new Path(finalFile)
+    val dstPath = new Path(finalFilePath)
 
-    if (fs.exists(dstPath))
-      fs.delete(dstPath, true)
-    fs.rename(partPath, dstPath)
-    fs.delete(srcDir, true)
+    Commons.deleteIfExists(sc, dstPath.toString)
+    Commons.move(sc, partPath.toString, dstPath.toString)
+    Commons.deleteIfExists(sc, srcDir.toString)
   }
   // ========== PARSING LOGIC ==========
 
@@ -166,9 +163,8 @@ object wikipediaCategoryAnalysis {
 
   private def parseLinktarget(
     sc: SparkContext,
-    deploymentMode: String,
     linktarget_path: String
-  ): RDD[LinkTarget] =
+  )(implicit deploymentMode: String): RDD[LinkTarget] =
     // Schema: (lt_id, lt_namespace, lt_title) -> Indices 0, 1, 2
 
     sc.textFile(Commons.getDatasetPath(deploymentMode, linktarget_path))
@@ -188,9 +184,8 @@ object wikipediaCategoryAnalysis {
 
   private def parseCategorylinks(
     sc: SparkContext,
-    deploymentMode: String,
     categorylinks_path: String
-  ): RDD[CategoryLink] =
+  )(implicit deploymentMode: String): RDD[CategoryLink] =
     // Schema: (cl_from, cl_sortkey, cl_timestamp, prefix, cl_type, collation, cl_target_id)
     // Indices: 0, 1, 2, 3, 4, 5, 6
     // We need: 0 (from), 4 (type), 6 (target_id)
@@ -212,7 +207,9 @@ object wikipediaCategoryAnalysis {
 
   // ========== JOB 3: PARSE PAGE ==========
 
-  private def parsePage(sc: SparkContext, deploymentMode: String, page_path: String): RDD[Page] =
+  private def parsePage(sc: SparkContext, page_path: String)(
+    implicit deploymentMode: String
+  ): RDD[Page] =
     // Schema: (page_id, page_namespace, page_title, ...) -> Indices 0, 1, 2
 
     sc.textFile(Commons.getDatasetPath(deploymentMode, page_path))
@@ -268,13 +265,12 @@ object wikipediaCategoryAnalysis {
   // ---------------------------------------------------------------------------
   @SuppressWarnings(Array("org.wartremover.warts.While"))
   private def buildPageToRootsMap(
-    deploymentMode: String,
     K: Int, // Max number of roots per article/category
     linkTargetRDD: RDD[LinkTarget],
     categoryLinksRDD: RDD[CategoryLink],
     pageRDD: RDD[Page],
     sc: SparkContext
-  ): RDD[(Int, RootMask)] = {
+  )(implicit deploymentMode: String, writeRule: Int): RDD[(Int, RootMask)] = {
 
     pageRDD.persist(StorageLevel.MEMORY_AND_DISK)
     categoryLinksRDD.persist(StorageLevel.MEMORY_AND_DISK)
@@ -297,11 +293,10 @@ object wikipediaCategoryAnalysis {
       .map { case (_, ((pageId, title), idx)) => s"$pageId\t$title\t$idx" }
 
     saveSingleTextFile(
-      deploymentMode,
       indices,
       "output/root_category_indices",
       "output/root_category_indices.tsv"
-    )
+    )(deploymentMode, writeRule, sc)
 
     @inline def maskOf(idx: Int): RootMask = 1L << idx
 
@@ -458,24 +453,36 @@ object wikipediaCategoryAnalysis {
   }
 
   def saveOutputs(
-    deploymentMode: String,
     pageToRootsRDD: RDD[(Int, RootMask)],
     outputPath: String,
-  ): Unit =
+  )(implicit sc: SparkContext, deploymentMode: String, writeRule: Int): Unit = {
     // Save as TSV: page_id \t root1,root2,...
+    val path = Commons.getDatasetPath(deploymentMode, outputPath)
+    if (writeRule == 1 && Commons.exists(sc, path)) {
+      println(s"Output path $path already exists. Skipping save as per write rule.")
+      return
+    }
+    Commons.deleteIfExists(sc, path)
     pageToRootsRDD
       .map { case (pageId, mask) => s"$pageId\t$mask" }
-      .saveAsTextFile(Commons.getDatasetPath(deploymentMode, outputPath))
+      .saveAsTextFile(path)
+  }
 
   // ========== MAIN ==========
 
   def main(args: Array[String]): Unit = {
 
-    val deploymentMode =
+    implicit val deploymentMode: String =
       if (args.length > 0)
         args(0)
       else
         "local"
+
+    implicit val writeRule: Int =
+      if (args.length > 1)
+        args(1).toInt
+      else
+        1
 
     val conf = new SparkConf()
       .setAppName("WikipediaCategoryAnalysis")
@@ -484,7 +491,7 @@ object wikipediaCategoryAnalysis {
       .set("spark.shuffle.spill.compress", "true")
       .set("spark.io.compression.codec", "lz4")
 
-    val sc = new SparkContext(conf)
+    implicit val sc: SparkContext = new SparkContext(conf)
     Commons.initializeSparkContext(deploymentMode, sc)
     println("======Starting Wikipedia Category Analysis Job======")
     sc.setLogLevel("WARN")
@@ -494,21 +501,31 @@ object wikipediaCategoryAnalysis {
     Logger.getLogger("org.apache.spark.storage.MemoryStore").setLevel(Level.ERROR)
     Logger.getLogger("org.apache.spark.storage.BlockManager").setLevel(Level.ERROR)
 
-    val linktarget_path    = "dataset/categories_dumps/enwiki-20251201-linktarget.sql.bz2"
-    val categorylinks_path = "dataset/categories_dumps/enwiki-20251201-categorylinks.sql.bz2"
-    val page_path          = "dataset/categories_dumps/enwiki-20251201-page.sql.bz2"
+    val linktarget_path    = "dataset/categories_dump/enwiki-20251201-linktarget.sql.bz2"
+    val categorylinks_path = "dataset/categories_dump/enwiki-20251201-categorylinks.sql.bz2"
+    val page_path          = "dataset/categories_dump/enwiki-20251201-page.sql.bz2"
 
     try {
+
+      if (
+        writeRule == 1 && Commons.exists(
+          sc,
+          Commons.getDatasetPath(deploymentMode, "output/page_to_root_categories/._SUCCESS.crc")
+        )
+      ) {
+        println("Output already exists. Skipping computation as per write rule.")
+        return
+      }
       // 1. Load Data
-      val linktarget    = parseLinktarget(sc, deploymentMode, linktarget_path)
-      val categorylinks = parseCategorylinks(sc, deploymentMode, categorylinks_path)
-      val page          = parsePage(sc, deploymentMode, page_path)
+      val linktarget    = parseLinktarget(sc, linktarget_path)
+      val categorylinks = parseCategorylinks(sc, categorylinks_path)
+      val page          = parsePage(sc, page_path)
 
       // 2. Build Graph
-      val hierarchy = buildPageToRootsMap(deploymentMode, 3, linktarget, categorylinks, page, sc)
+      val hierarchy = buildPageToRootsMap(3, linktarget, categorylinks, page, sc)
 
       // 3. Save Results
-      saveOutputs(deploymentMode, hierarchy, "output/page_to_root_categories")
+      saveOutputs(hierarchy, "output/page_to_root_categories")
 
       val sample = hierarchy.takeSample(withReplacement = false, 20, Random.nextLong())
 

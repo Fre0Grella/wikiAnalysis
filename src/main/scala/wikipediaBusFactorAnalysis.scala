@@ -17,17 +17,20 @@ object wikipediaBusFactorAnalysis {
   )
   def main(args: Array[String]): Unit = {
 
-    val deploymentMode =
+    implicit val deploymentMode: String =
       if (args.length > 0)
         args(0)
       else
         "local"
 
+    implicit val writeRule: Int =
+      if (args.length > 1)
+        args(1).toInt
+      else
+        1
+
     val conf = new SparkConf()
       .setAppName("Wikipedia Bus Factor")
-      .setMaster("local[*]")
-      .set("spark.executor.memory", "4g")
-      .set("spark.driver.memory", "4g")
 
     val sc = new SparkContext(conf)
     Commons.initializeSparkContext(deploymentMode, sc)
@@ -123,7 +126,6 @@ object wikipediaBusFactorAnalysis {
     //      }
     //    }
     saveOutputs(
-      deploymentMode,
       busFactor,
       "output",
       sc
@@ -147,19 +149,24 @@ object wikipediaBusFactorAnalysis {
 
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   def saveOutputs(
-    deploymentMode: String,
     result: RDD[(Int, (Int, Long, Array[(String, Long)]))],
     dirPath: String,
     sc: SparkContext
-  ): Unit = {
-    var decoder: RootDecoder = null
-    if (deploymentMode == "local") {
-      decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc, deploymentMode)
-
-    } else {
-      decoder = RootDecoder.fromTsv("output/root_category_indices/part-0*")(sc, deploymentMode)
-
+  )(implicit deploymentMode: String, writeRule: Int): Unit = {
+    if (
+      writeRule == 1 && Commons.exists(
+        sc,
+        Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor")
+      ) &&
+      Commons.exists(
+        sc,
+        Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors")
+      )
+    ) {
+      println(s"Output already exists at $dirPath. Skipping write as per write rule.")
+      return
     }
+    val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc, deploymentMode)
 
     result
       .map { case (cat, (busFactor, totalBytes, _)) =>
@@ -177,34 +184,31 @@ object wikipediaBusFactorAnalysis {
       .coalesce(1)
       .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors"))
 
-    if (deploymentMode == "local") {
+    val conf = new Configuration()
+    val fs   = FileSystem.get(conf)
 
-      val conf = new Configuration()
-      val fs   = FileSystem.get(conf)
+    val srcDir  = new Path(Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor"))
+    val srcDir2 = new Path(Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors"))
+    singleFile(srcDir, "bus_factor.tsv")
+    singleFile(srcDir2, "top_contributors.tsv")
 
-      val srcDir  = new Path(dirPath + "/bus_factor")
-      val srcDir2 = new Path(dirPath + "/top_contributors")
-      singleFile(srcDir, "bus_factor.tsv")
-      singleFile(srcDir2, "top_contributors.tsv")
+    def singleFile(srcDir: Path, outputFileName: String): Unit = {
+      val statuses = fs.listStatus(srcDir)
 
-      def singleFile(srcDir: Path, outputFileName: String): Unit = {
-        val statuses = fs.listStatus(srcDir)
+      val partPath =
+        statuses
+          .map(_.getPath)
+          .find(_.getName.startsWith("part-"))
+          .get
 
-        val partPath =
-          statuses
-            .map(_.getPath)
-            .find(_.getName.startsWith("part-"))
-            .get
+      val dstPath = new Path(Commons.getDatasetPath(deploymentMode, s"output/$outputFileName"))
 
-        val dstPath = new Path(s"output/$outputFileName")
+      Commons.deleteIfExists(sc, dstPath.toString)
+      Commons.move(sc, partPath.toString, dstPath.toString)
+      Commons.deleteIfExists(sc, srcDir.toString)
 
-        if (fs.exists(dstPath))
-          fs.delete(dstPath, true)
-        fs.rename(partPath, dstPath)
-        fs.delete(srcDir, true)
-
-      }
     }
+
   }
 
   case class UserContribution(
