@@ -45,7 +45,8 @@ wartremoverErrors ++= Warts.allBut(
   Wart.FinalCaseClass,
     Wart.PublicInference,
   Wart.Overloading,
-  Wart.Null
+  Wart.Null,
+  Wart.ImplicitParameter
 )
 
 scalacOptions ++= Seq(
