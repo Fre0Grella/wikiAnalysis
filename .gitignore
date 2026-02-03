@@ -1,7 +1,9 @@
 # Project specific
 dataset/
 checkpoints/
-
+null/
+aws/
+src/main/resources/
 
 # SBT specific
 
@@ -38,7 +40,6 @@ out/
 .DS_Store
 
 # Data files
-dataset/
 *.tsv
 *.tsv.bz2
 *.csv
@@ -99,3 +100,4 @@ target/scala-*/scoverage-report/
 
 # Assembly
 *-assembly-*.jar
+/aws/
