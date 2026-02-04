@@ -1,4 +1,3 @@
-import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{ FileSystem, Path }
 import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
@@ -184,8 +183,7 @@ object wikipediaBusFactorAnalysis {
       .coalesce(1)
       .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors"))
 
-    val conf = new Configuration()
-    val fs   = FileSystem.get(conf)
+    val fs = FileSystem.get(sc.hadoopConfiguration)
 
     val srcDir  = new Path(Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor"))
     val srcDir2 = new Path(Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors"))

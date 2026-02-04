@@ -13,6 +13,9 @@ object JobLauncher {
           System.err.println("Bad write rule. Use 'overwrite' or 'skip'.")
           return
       }
+
+      printf("Chosen configuration: deploymentMode=%s, writeRule=%s\n", deploymentMode, writeRule)
+
     args(1) match {
       case "cat" => wikipediaCategoryAnalysis.main(Array(deploymentMode, writeRule))
       case "bus" => wikipediaBusFactorAnalysis.main(Array(deploymentMode, writeRule))

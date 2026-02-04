@@ -11,6 +11,6 @@ object Config {
   val s3OutputPath  = s"output/"
   val s3HistoryPath = s"spark-logs/"
 
-  val credentialsPath: String = "/aws_credentials.txt"
+  val credentialsPath: String = "/aws_credentials"
 
 }

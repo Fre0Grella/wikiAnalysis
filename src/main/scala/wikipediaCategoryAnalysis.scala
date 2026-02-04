@@ -1,9 +1,9 @@
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{ FileSystem, Path }
 import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{ SparkConf, SparkContext }
-import org.apache.hadoop.fs.{ FileStatus, FileSystem, Path }
-import org.apache.hadoop.conf.Configuration
 import utils.Commons
 
 import scala.util.{ Random, Try }
@@ -53,8 +53,7 @@ object wikipediaCategoryAnalysis {
       .coalesce(1)
       .saveAsTextFile(dirPathFull)
 
-    val conf     = new Configuration()
-    val fs       = FileSystem.get(conf)
+    val fs       = FileSystem.get(sc.hadoopConfiguration)
     val srcDir   = new Path(dirPathFull)
     val statuses = fs.listStatus(srcDir)
 
