@@ -1,103 +1,248 @@
-# Project specific
+
+# ============ Sensitive Data ============
+# NEVER commit credentials!
+src/main/resources/aws_credentials
+.aws/
+aws/keys
+*.pem
+*.key
+credentials
+config
+
+# AWS-specific
+.aws/credentials
+.aws/config
+
+# ============ Datasets ============
+# Large dataset files
 dataset/
+output/
+output_baseline/
 checkpoints/
-null/
-aws/
-src/main/resources/
-
-# SBT specific
-
-target/
-lib_managed/
-src_managed/
-project/boot/
-project/plugins/project/
-.history
-.cache
-.lib/
-
-# Scala-IDE specific
-.scala_dependencies
-.worksheet
-.classpath
-.project
-.settings/
-
-# IntelliJ IDEA
-.idea/
-*.iml
-*.ipr
-*.iws
-out/
-
-# VS Code
-.vscode/
-.metals/
-.bloop/
-.bsp/
-
-# Mac
-.DS_Store
-
-# Data files
+checkpoints_baseline/
 *.tsv
-*.tsv.bz2
 *.csv
+*.bz2
+*.gz
+*.lz4
 *.parquet
-*.json
 
-# Logs
-*.log
-logs/
+# But keep sample data structure
+!dataset/.gitkeep
+
+# ============ Spark & Hadoop ============
+# Spark
 spark-warehouse/
 metastore_db/
 derby.log
+*.log
+spark-events/
+/spark-logs/
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-ENV/
-.venv
-pip-log.txt
-pip-delete-this-directory.txt
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-*.egg-info/
-dist/
+# Checkpoints
+checkpoint/
+.checkpoint/
+
+# Temp files
+tmp/
+temp/
+.tmp/
+
+# ============ Scala / SBT ============
+# SBT specific
+target/
+project/target/
+project/project/
+lib_managed/
+src_managed/
+*.class
+*.jar
+!lib/*.jar
+
+# SBT plugins
+project/plugins/project/
+
+# Build artifacts
 build/
+out/
+dist/
 
-# Jupyter Notebooks
-.ipynb_checkpoints
-*.ipynb
+# ============ IntelliJ IDEA ============
+.idea/
+.idea_modules/
+*.iml
+*.ipr
+*.iws
+.bsp/
 
-# Environment variables
-.env
-.env.local
-*.env
+# User-specific stuff
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
 
-# AWS
-.aws-sam/
+# Generated files
+.idea/**/contentModel.xml
+.idea/**/dataSources/
+.idea/**/dataSources.ids
+.idea/**/dataSources.local.xml
+.idea/**/sqlDataSources.xml
+.idea/**/dynamic.xml
+.idea/**/uiDesigner.xml
+.idea/**/dbnavigator.xml
 
-# Temporary files
+# ============ VS Code ============
+.vscode/
+*.code-workspace
+
+# ============ Eclipse ============
+.classpath
+.project
+.settings/
+bin/
+.metadata/
+*.launch
+.recommenders/
+.externalToolBuilders/
+.cache-main
+.cache-tests
+
+# ============ Metals (VS Code Scala) ============
+.metals/
+.bloop/
+.ammonite/
+metals.sbt
+project/metals.sbt
+
+# ============ macOS ============
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Thumbnails
+Thumbs.db
+
+# ============ Linux ============
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============ Windows ============
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ============ Logs & Temp ============
+*.log
+*.log.*
+logs/
+log/
 *.tmp
 *.temp
 *.swp
 *.swo
-*~
+*~.nib
 
-# Coverage reports
+# ============ Python (if used for scripts) ============
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+.venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# ============ R (if used for analysis) ============
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# ============ Jupyter Notebooks ============
+.ipynb_checkpoints/
+*.ipynb
+
+# ============ Backup & Archive ============
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# ============ Test & Coverage ============
+test-output/
 coverage/
-scoverage-report/
-target/scala-*/scoverage-data/
-target/scala-*/scoverage-report/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+.pytest_cache/
 
-# Assembly
-*-assembly-*.jar
-/aws/
+# ============ Documentation ============
+# Keep markdown but ignore generated docs
+site/
+docs/_build/
+docs/.doctrees/
+
+# But keep our docs
+!docs/
+!docs/**/*.md
+!README.md
+
+# ============ Package Managers ============
+# npm (if used)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Maven (if used)
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# ============ Environment & Config ============
+.env
+.env.local
+.env.*.local
+*.properties
+!src/main/resources/*.properties.template
+
+# ============ Database ============
+*.db
+*.sqlite
+*.sqlite3
+
+# ============ Misc ============
+*.pid
+.cache/
+.cache-main
+.cache-tests
+.history
+.lib/
