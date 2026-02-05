@@ -14,7 +14,7 @@ object JobLauncher {
           return
       }
 
-      printf("Chosen configuration: deploymentMode=%s, writeRule=%s\n", deploymentMode, writeRule)
+    printf("Chosen configuration: deploymentMode=%s, writeRule=%s\n", deploymentMode, writeRule)
 
     args(1) match {
       case "cat" => wikipediaCategoryAnalysis.main(Array(deploymentMode, writeRule))

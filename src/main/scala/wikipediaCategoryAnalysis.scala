@@ -1,9 +1,8 @@
-import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{ FileSystem, Path }
 import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{ SparkConf, SparkContext }
+import org.apache.hadoop.fs.{ FileSystem, Path }
 import utils.Commons
 
 import scala.util.{ Random, Try }
@@ -44,31 +43,31 @@ object wikipediaCategoryAnalysis {
   )(implicit deploymentMode: String, writeRule: Int, sc: SparkContext): Unit = {
     val finalFilePath = Commons.getDatasetPath(deploymentMode, finalFile)
     val dirPathFull   = Commons.getDatasetPath(deploymentMode, dirPath)
+
     if (writeRule == 1 && Commons.exists(sc, finalFilePath)) {
       println(s"Output file $finalFile already exists. Skipping save as per write rule.")
       return
     }
+
+    // Delete both temp dir and final file if they exist
     Commons.deleteIfExists(sc, dirPathFull)
+    Commons.deleteIfExists(sc, finalFilePath)
+
+    // Save to temp directory
     rdd
       .coalesce(1)
       .saveAsTextFile(dirPathFull)
 
-    val fs       = FileSystem.get(sc.hadoopConfiguration)
-    val srcDir   = new Path(dirPathFull)
-    val statuses = fs.listStatus(srcDir)
+    // Move the part file to final location using Commons (which handles FS correctly)
+    val tempPartPath = dirPathFull + "/part-00000"
+    Commons.move(sc, tempPartPath, finalFilePath)
 
-    val partPath =
-      statuses
-        .map(_.getPath)
-        .find(_.getName.startsWith("part-"))
-        .get
+    // Clean up temp directory
+    Commons.deleteIfExists(sc, dirPathFull)
 
-    val dstPath = new Path(finalFilePath)
-
-    Commons.deleteIfExists(sc, dstPath.toString)
-    Commons.move(sc, partPath.toString, dstPath.toString)
-    Commons.deleteIfExists(sc, srcDir.toString)
+    println(s"✓ Saved single file: $finalFilePath")
   }
+
   // ========== PARSING LOGIC ==========
 
   /** Robust parser for Splittable LZ4 SQL Dumps. Handles:

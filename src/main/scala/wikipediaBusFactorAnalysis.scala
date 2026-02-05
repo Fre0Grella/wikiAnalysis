@@ -16,6 +16,8 @@ object wikipediaBusFactorAnalysis {
   )
   def main(args: Array[String]): Unit = {
 
+    val topBound = 2000
+
     implicit val deploymentMode: String =
       if (args.length > 0)
         args(0)
@@ -43,14 +45,18 @@ object wikipediaBusFactorAnalysis {
     // println("Loading page to categories mapping...")
     val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc, deploymentMode)
 
-    val categories    = sc.textFile("output/page_to_root_categories/part-*")
+    val categories    = sc.textFile(
+      Commons.getDatasetPath(deploymentMode, "output/page_to_root_categories/part-*")
+    )
     val articleTopics = categories
       .map(_.split("\t"))
       .map(data => (data(0).toInt, data(1).toLong))
 
     // printf("Total Articles with Categories: %d\n", articleTopics.count())
 
-    val historyDump   = sc.textFile("dataset/wikimedia_dumps/*.tsv.bz2")
+    val historyDump   = sc.textFile(
+      Commons.getDatasetPath(deploymentMode, "dataset/wikimedia_dumps/*.tsv.bz2")
+    )
     // println(s"Raw history lines: ${historyDump.count()}")
     val filteredInput = historyDump
       .map(_.split("\t", -1))
@@ -86,13 +92,13 @@ object wikipediaBusFactorAnalysis {
       )(
         { case ((totalBytes, queue), (user, bytes)) =>
           queue += ((user, bytes))
-          if (queue.size > 1000)
+          if (queue.size > topBound)
             queue.dequeue() // Keep top 100
           (totalBytes + bytes, queue)
         },
         { case ((total1, queue1), (total2, queue2)) =>
           queue1 ++= queue2
-          while (queue1.size > 1000)
+          while (queue1.size > topBound)
             queue1.dequeue()
           (total1 + total2, queue1)
         }
@@ -114,16 +120,6 @@ object wikipediaBusFactorAnalysis {
       }
       .persist(StorageLevel.MEMORY_AND_DISK)
 
-    //    println("Bus Factor Results:")
-    //    busFactor.collect().foreach { case (cat, (busFactor, totalBytes, topContributors)) =>
-    //      println(s"Category: $cat")
-    //      println(s"  Bus Factor: $busFactor")
-    //      println(s"  Total Contribution (bytes): $totalBytes")
-    //      println(s"  Top Contributors:")
-    //      topContributors.foreach { case (user, bytes) =>
-    //        println(s"    User: $user, Contribution (bytes): $bytes")
-    //      }
-    //    }
     saveOutputs(
       busFactor,
       "output",
@@ -152,61 +148,53 @@ object wikipediaBusFactorAnalysis {
     dirPath: String,
     sc: SparkContext
   )(implicit deploymentMode: String, writeRule: Int): Unit = {
+    val busFactorPath      = Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor")
+    val topContributorPath = Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors")
+    val busFactorFile      = Commons.getDatasetPath(deploymentMode, "output/bus_factor.tsv")
+    val topContribFile     = Commons.getDatasetPath(deploymentMode, "output/top_contributors.tsv")
+
     if (
-      writeRule == 1 && Commons.exists(
+      writeRule == 1 && Commons.exists(sc, busFactorFile) && Commons.exists(
         sc,
-        Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor")
-      ) &&
-      Commons.exists(
-        sc,
-        Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors")
+        topContribFile
       )
     ) {
       println(s"Output already exists at $dirPath. Skipping write as per write rule.")
       return
     }
+
     val decoder = RootDecoder.fromTsv("output/root_category_indices.tsv")(sc, deploymentMode)
 
+    // Save bus_factor
+    Commons.deleteIfExists(sc, busFactorPath)
+    Commons.deleteIfExists(sc, busFactorFile)
     result
       .map { case (cat, (busFactor, totalBytes, _)) =>
         val catString = decoder.idxToName(cat)
         s"$catString\t$busFactor\t$totalBytes"
       }
       .coalesce(1)
-      .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor"))
+      .saveAsTextFile(busFactorPath)
 
+    Commons.move(sc, busFactorPath + "/part-00000", busFactorFile)
+    Commons.deleteIfExists(sc, busFactorPath)
+
+    // Save top_contributors
+    Commons.deleteIfExists(sc, topContributorPath)
+    Commons.deleteIfExists(sc, topContribFile)
     result
       .flatMap { case (cat, (_, _, topContributors)) =>
         val catString = decoder.idxToName(cat)
         topContributors.map { case (user, bytes) => s"$catString\t$user\t$bytes" }
       }
       .coalesce(1)
-      .saveAsTextFile(Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors"))
+      .saveAsTextFile(topContributorPath)
 
-    val fs = FileSystem.get(sc.hadoopConfiguration)
+    Commons.move(sc, topContributorPath + "/part-00000", topContribFile)
+    Commons.deleteIfExists(sc, topContributorPath)
 
-    val srcDir  = new Path(Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor"))
-    val srcDir2 = new Path(Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors"))
-    singleFile(srcDir, "bus_factor.tsv")
-    singleFile(srcDir2, "top_contributors.tsv")
-
-    def singleFile(srcDir: Path, outputFileName: String): Unit = {
-      val statuses = fs.listStatus(srcDir)
-
-      val partPath =
-        statuses
-          .map(_.getPath)
-          .find(_.getName.startsWith("part-"))
-          .get
-
-      val dstPath = new Path(Commons.getDatasetPath(deploymentMode, s"output/$outputFileName"))
-
-      Commons.deleteIfExists(sc, dstPath.toString)
-      Commons.move(sc, partPath.toString, dstPath.toString)
-      Commons.deleteIfExists(sc, srcDir.toString)
-
-    }
-
+    println(s"✓ Saved: $busFactorFile")
+    println(s"✓ Saved: $topContribFile")
   }
 
   case class UserContribution(
