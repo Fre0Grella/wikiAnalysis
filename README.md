@@ -19,7 +19,6 @@ A distributed data analysis project that processes Wikipedia's entire revision h
 - [Running on AWS EMR](#-running-on-aws-emr)
 - [Understanding the Output](#-understanding-the-output)
 - [Project Structure](#-project-structure)
-- [Performance Analysis](#-performance-analysis)
 - [Troubleshooting](#-troubleshooting)
 - [License](#-license)
 
@@ -609,24 +608,6 @@ wikipedia-spark-analysis/
 ├── build.sbt                                       # SBT build configuration
 ├── .gitignore                                      # Git ignore rules
 └── README.md                                       # This file
-```
-
----
-
-## 📈 Performance Analysis
-
-### Running Both Versions for Comparison
-
-```bash
-# Run baseline
-spark-submit --class JobLauncher ... remote cat overwrite baseline
-spark-submit --class JobLauncher ... remote bus overwrite baseline
-
-
-# Run optimized
-spark-submit --class JobLauncher ... remote cat overwrite optimized
-spark-submit --class JobLauncher ... remote bus overwrite optimized
-
 ```
 
 ---

@@ -1,11 +1,9 @@
 # Performance Analysis Report
-**Wikipedia Data Analysis Project**  
-Big Data Course (81932) - University of Bologna  
-A.Y. 2025/26
+**Wikipedia Data Analysis Project**
 
 ---
 
-## 1. Executive Summary
+## 1. Summary
 
 This report compares two implementations of Wikipedia data analysis jobs:
 - **Baseline (Non-Optimized)**: Uses standard RDD operations without optimization
@@ -15,28 +13,25 @@ This report compares two implementations of Wikipedia data analysis jobs:
 - Total runtime improvement: **[X]%**
 - Shuffle data reduction: **[X] GB → [Y] GB ([Z]% reduction)**
 - Memory efficiency improvement: **[X]%**
-- Cost savings (executor hours): **[X]%**
 
 ---
 
 ## 2. Dataset Description
 
 ### 2.1 Source Data
-- **Wikipedia Revision History Dumps**: December 2025
+- **Wikipedia Revision History Dumps**:
+  - Partition: Into monthly files
   - Format: TSV compressed with bzip2
-  - Size: ~47 GB compressed, ~XXX GB uncompressed
+  - Size: ~500 MB compressed
   - Records: ~XXX million revision events
-  - Date range: 2001-01 to 2025-11
+  - Available Date range: 2001-01 to Last Month
+  - Used Range: 2020-01 to 2025-11
+  - Total Size: ~37,5 GB compressed
 
 - **Wikipedia Category Structure**:
-  - `categorylinks.sql.bz2`: ~XX GB
-  - `linktarget.sql.bz2`: ~XX GB  
-  - `page.sql.bz2`: ~XX GB
-
-### 2.2 Sample Dataset (Development/Debugging)
-- Size: 10 MB
-- Records: ~XXX thousand
-- Used for: Initial development, debugging, correctness validation
+  - `categorylinks.sql.bz2`: ~2,1 GB
+  - `linktarget.sql.bz2`: ~0,9 GB  
+  - `page.sql.bz2`: ~1,8 GB
 
 ---
 
@@ -110,61 +105,22 @@ This report compares two implementations of Wikipedia data analysis jobs:
 #### Execution Time
 ```
 Baseline:     [XX] minutes [YY] seconds
-Optimized:    [AA] minutes [BB] seconds
+Optimized:    34mins, 23sec
 Improvement:  [ZZ]% faster
 ```
 
 #### Shuffle Metrics
 | Metric | Baseline | Optimized | Δ |
 |--------|----------|-----------|---|
-| Total Shuffle Write | [XX] GB | [YY] GB | **-[ZZ]%** |
-| Total Shuffle Read | [XX] GB | [YY] GB | **-[ZZ]%** |
-| Avg Shuffle Write/Stage | [XX] GB | [YY] GB | **-[ZZ]%** |
-| Max Shuffle Spill to Disk | [XX] GB | [YY] GB | **-[ZZ]%** |
-
-#### Stage Breakdown
-```
-Baseline: XX stages total
-- Parse stages: X stages ([Y] min)
-- Join stages: X stages ([Y] min) ← EXPENSIVE
-- Iteration stages: X stages × 15 iterations ([Y] min)
-- Aggregation stages: X stages ([Y] min)
-
-Optimized: XX stages total  
-- Parse stages: X stages ([Y] min)
-- Broadcast preparation: X stage ([Y] min)
-- Iteration stages: X stages × 12 iterations ([Y] min) ← FASTER CONVERGENCE
-- Map-side join: X stage ([Y] min) ← NO SHUFFLE
-```
-
-#### Memory Usage
-| Metric | Baseline | Optimized | Notes |
-|--------|----------|-----------|-------|
-| Peak Executor Memory | [XX] GB | [YY] GB | Broadcast cache |
-| Avg Executor Memory | [XX] GB | [YY] GB | Better reuse |
-| Spill to Disk | [XX] GB | [YY] GB | Reduced pressure |
-
-#### Task Metrics
-```
-Baseline:
-- Total tasks: XXXXX
-- Failed tasks: XX
-- Task duration: median [X]s, max [Y]s
-- Stragglers: XX tasks >2× median
-
-Optimized:
-- Total tasks: XXXXX
-- Failed tasks: X
-- Task duration: median [X]s, max [Y]s  
-- Stragglers: X tasks >2× median
-```
+| Total Shuffle Write | [XX] GB | 5 GB      | **-[ZZ]%** |
+| Total Shuffle Read | [XX] GB | 7,1 GB    | **-[ZZ]%** |
 
 ### 5.2 Bus Factor Job
 
 #### Execution Time
 ```
 Baseline:     [XX] minutes [YY] seconds
-Optimized:    [AA] minutes [BB] seconds
+Optimized:    50mins, 58seconds
 Improvement:  [ZZ]% faster
 ```
 
@@ -173,24 +129,6 @@ Improvement:  [ZZ]% faster
 |--------|----------|-----------|---|
 | Total Shuffle Write | [XX] GB | [YY] GB | **-[ZZ]%** |
 | Total Shuffle Read | [XX] GB | [YY] GB | **-[ZZ]%** |
-| Records Shuffled | [XX]M | [YY]M | **-[ZZ]%** |
-
-#### Stage Analysis
-```
-Baseline Stages:
-1. Load & Filter History: [X] min
-2. Join with Categories (SHUFFLE): [Y] min ← EXPENSIVE  
-3. GroupByKey per User-Category (SHUFFLE): [Z] min ← EXPENSIVE
-4. Calculate Bus Factor: [W] min
-5. Save Output: [V] min
-
-Optimized Stages:
-1. Load & Filter History: [X] min
-2. Join with Categories: [Y] min ← SAME (unavoidable)
-3. AggregateByKey (SHUFFLE): [Z] min ← MUCH FASTER
-4. Calculate Bus Factor: [W] min  
-5. Save Output: [V] min
-```
 
 ---
 
@@ -230,58 +168,10 @@ Optimized Stages:
 - PriorityQueue built during aggregation (single pass)
 - Cached intermediate results
 
----
-
-## 7. Timeline Analysis
-
-### 7.1 Category Analysis Timeline
-[INSERT SCREENSHOT: Spark UI → Jobs → Event Timeline]
-
-**Baseline:**
-- Executor compute time: XX%
-- Shuffle read time: XX%
-- Shuffle write time: XX%
-- Result serialization: XX%
-- **Idle time: XX%** ← Inefficiency indicator
-
-**Optimized:**
-- Executor compute time: XX%
-- Shuffle read time: XX%  
-- Shuffle write time: XX%
-- Result serialization: XX%
-- **Idle time: XX%** ← Reduced
-
-### 7.2 Bus Factor Timeline
-[Similar analysis]
-
----
 
 ## 8. Detailed Optimization Explanations
 
 ### 8.1 Why Broadcast Join Works
-
-**Problem with Regular Join:**
-```scala
-// Baseline: Both RDDs shuffled across network
-categoryLinks (50M records) join categoryMasks (2M records)
-→ Shuffle write: 50M × avg_record_size
-→ Shuffle read: 50M × avg_record_size
-```
-
-**Broadcast Solution:**
-```scala
-// Optimized: Small RDD broadcasted to all executors
-val categoryMasksBc = sc.broadcast(categoryMasks.collectAsMap()) // 200 MB
-categoryLinks.mapPartitions { iter =>
-  val lookup = categoryMasksBc.value // In-memory access
-  iter.flatMap(cl => lookup.get(cl.cl_target_id).map(mask => (cl.cl_from, mask)))
-}
-→ Shuffle write: 0 GB ✅
-→ Broadcast size: 200 MB (one-time cost)
-→ Network savings: ~XX GB
-```
-
-**Why it's valid:**
 - Category masks fit in memory (200 MB << executor memory)
 - Read-heavy workload (50M lookups vs 2M entries)
 - No risk of broadcast variable becoming stale
@@ -289,10 +179,6 @@ categoryLinks.mapPartitions { iter =>
 ### 8.2 ReduceByKey vs GroupByKey
 
 **GroupByKey (Baseline):**
-```scala
-// Example: Sum contributions per (user, category)
-rdd.groupByKey().mapValues(_.sum)
-
 Problem:
 1. Sends ALL values for each key across network
 2. No local aggregation (map-side combine)
@@ -300,12 +186,9 @@ Problem:
 
 For key "Alice" with 1000 contributions:
 → Shuffle: 1000 values × record_size
-```
+
 
 **ReduceByKey (Optimized):**
-```scala
-rdd.reduceByKey(_ + _)
-
 Solution:
 1. Local aggregation BEFORE shuffle (combiner)
 2. Only partial sums cross network
@@ -314,12 +197,11 @@ Solution:
 For key "Alice" with 1000 contributions:
 → Shuffle: 1 partial sum per partition (200 values instead of 1000)
 → 80% less shuffle data
-```
+
 
 ### 8.3 Checkpointing Strategy
 
 **Why Checkpointing is Necessary:**
-```
 Without checkpointing after 20 iterations:
 - Lineage graph: 20 joins × 3 transformations = 60 stages in DAG
 - Stack overflow risk on recomputation
@@ -331,44 +213,40 @@ With checkpointing every 3 iterations:
 - Disk cost: ~5 GB × 6 checkpoints = 30 GB
 - Time cost: ~30 seconds per checkpoint
 → Trade-off is worth it for long iterative jobs
-```
 
-**Both versions use checkpointing** because it's essential for algorithm correctness, not an optimization.
+
+**Both versions use checkpointing** because the lineage graph explode in size and it will be unnecessary to afford such resources. (> 16GB of memory)
 
 ### 8.4 Coalesce After Filters
 
 **Problem:**
-```scala
-// Start: 200 partitions, 100 GB data
-val filtered = input.filter(highlySelectiveCondition) // Keeps 5% of data
-// Now: 200 partitions, 5 GB data
-// Each partition has only 25 MB → underutilized
+
+Start: 200 partitions, 100 GB data
+
+After Filter: 200 partitions, 5 GB data
+Each partition has only 25 MB → underutilized
 
 Next shuffle:
 - 200 tasks created
 - 195 tasks finish in <1 second (mostly empty)
 - Stragglers and overhead
-```
+
 
 **Solution:**
-```scala
-val filtered = input.filter(...).coalesce(50)
-// Now: 50 partitions, 5 GB data
-// Each partition: 100 MB → optimal
+
+After filter and coalesce: 50 partitions, 5 GB data
+Each partition: 100 MB → optimal
 
 Next shuffle:
 - 50 tasks (4× fewer)
 - Better CPU utilization
 - Less scheduling overhead
-```
 
 ---
 
 ## 9. Iterative Algorithm Analysis
-
-### 9.1 Why Iteration Count Matters
-
-The category propagation algorithm is iterative because RDD transformations cannot express cycles in the computation graph.
+ As I study more in depth the Wikipedia dataset, I found that the only possible solution to get some general categories was the use oa an iterative algorithm even if it's not ideal in a spark environment.
+So my choice was to use a label propagation algorithm that starts from the root categories and iteratively labels the children until convergence.
 
 **Algorithm Pattern:**
 ```
@@ -378,49 +256,9 @@ iteration 3: Grandchildren labeled
 ...
 iteration N: Convergence (no new labels)
 ```
-
-**Baseline vs Optimized Convergence:**
-- Baseline: 15 iterations average
-- Optimized: 12 iterations average
-- Reason: Better data locality → faster propagation
-
-**Per-Iteration Cost:**
-```
-Baseline: ~[X] minutes × 15 iterations = [Y] minutes
-Optimized: ~[X] minutes × 12 iterations = [Y] minutes
-Savings: [Z] minutes from fewer iterations + [W] minutes from faster iterations
-```
-
-### 9.2 RDD-Only Constraint Impact
-
-**Alternative Considered: GraphX**
-```scala
-// Could use Pregel API for message passing
-val graph = Graph(vertices, edges)
-val result = graph.pregel(initialMsg)(
-  vprog = (id, attr, msg) => attr ++ msg,
-  sendMsg = triplet => Iterator((triplet.dstId, triplet.srcAttr)),
-  mergeMsg = (a, b) => a ++ b
-)
-```
-
-**Why We Stuck with RDDs:**
-- Project requirement: "only use RDD from the spark suite"
-- GraphX internally uses RDDs but adds abstraction overhead
-- Our custom iteration with checkpointing gives us more control
-
-**Performance Comparison (Estimated):**
-- GraphX Pregel: ~10% faster (optimized message passing)
-- Custom RDD iteration: More verbose but meets requirements
-- Trade-off: Correctness > slight performance gain
-
 ---
 
 ## 10. Resource Utilization
-
-### 10.1 Executor Metrics
-
-[INSERT SCREENSHOT: Spark UI → Executors]
 
 #### Baseline
 ```
@@ -448,19 +286,6 @@ Peak memory: XX GB
 Avg memory: XX GB
 GC time: X.X% of total time ← IMPROVED
 Disk spill: X GB ← MUCH LESS
-```
-
-### 10.2 CPU Utilization
-```
-Baseline:
-- Avg CPU: XX%
-- Peak CPU: XX%
-- Idle periods: XX% ← Stragglers waiting
-
-Optimized:  
-- Avg CPU: XX%
-- Peak CPU: XX%
-- Idle periods: XX% ← Better load balancing
 ```
 
 ---
