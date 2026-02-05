@@ -143,7 +143,6 @@ mkdir -p checkpoints
 mkdir -p checkpoints_baseline
 mkdir -p src/main/resources
 mkdir -p docs
-mkdir -p logs
 
 print_success "Created dataset directories"
 print_success "Created output directories"
@@ -165,46 +164,48 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     
     # Create ~/.aws directory
-    mkdir -p ~/.aws
+    mkdir -p aws
     
     # AWS CLI credentials
-    if [ ! -f ~/.aws/credentials ]; then
-        echo "Creating ~/.aws/credentials file..."
+    if [ ! -f aws/credentials ]; then
+        echo "Creating aws/credentials file..."
         read -p "Enter AWS Access Key ID: " AWS_ACCESS_KEY_ID
         read -s -p "Enter AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY
+        read -s -p "Enter AWS Session Token: " AWS_SECRET_ACCESS_KEY
         echo
         read -p "Enter AWS Region (default: us-east-1): " AWS_REGION
         AWS_REGION=${AWS_REGION:-us-east-1}
         
-        cat > ~/.aws/credentials << EOF
+        cat > aws/credentials << EOF
 [default]
 aws_access_key_id = $AWS_ACCESS_KEY_ID
 aws_secret_access_key = $AWS_SECRET_ACCESS_KEY
+aws_session_token= $AWS_SESSION_TOKEN
 EOF
         
-        cat > ~/.aws/config << EOF
+        cat > aws/config << EOF
 [default]
 region = $AWS_REGION
 output = json
 EOF
         
-        chmod 600 ~/.aws/credentials
-        chmod 600 ~/.aws/config
+        chmod 600 aws/credentials
+        chmod 600 aws/config
         
-        print_success "Created ~/.aws/credentials"
-        print_success "Created ~/.aws/config"
+        print_success "Created aws/credentials"
+        print_success "Created aws/config"
     else
-        print_info "~/.aws/credentials already exists, skipping"
+        print_info "aws/credentials already exists, skipping"
     fi
     
     # Spark application credentials
     if [ ! -f src/main/resources/aws_credentials ]; then
         echo "Creating src/main/resources/aws_credentials file..."
         
-        # Read from ~/.aws/credentials if available
-        if [ -f ~/.aws/credentials ]; then
-            AWS_KEY=$(grep "aws_access_key_id" ~/.aws/credentials | cut -d'=' -f2 | tr -d ' ')
-            AWS_SECRET=$(grep "aws_secret_access_key" ~/.aws/credentials | cut -d'=' -f2 | tr -d ' ')
+        # Read from aws/credentials if available
+        if [ -f aws/credentials ]; then
+            AWS_KEY=$(grep "aws_access_key_id" aws/credentials | cut -d'=' -f2 | tr -d ' ')
+            AWS_SECRET=$(grep "aws_secret_access_key" aws/credentials | cut -d'=' -f2 | tr -d ' ')
         else
             read -p "Enter AWS Access Key ID (for Spark app): " AWS_KEY
             read -s -p "Enter AWS Secret Access Key (for Spark app): " AWS_SECRET
@@ -324,24 +325,22 @@ fi
 print_header "Step 6: Sample Data (Optional)"
 
 echo "Do you want to download a small sample dataset for testing?"
-echo "  Size: ~10 MB (takes 1-2 minutes)"
+echo "  Size: ~2-3 GB (takes 1-2 minutes)"
 echo ""
 read -p "Download sample data? (y/N): " -n 1 -r
 echo
 
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     print_info "Downloading sample Wikipedia data..."
-    
-    # Download a small sample
-    SAMPLE_URL="https://dumps.wikimedia.org/enwiki/20241101/enwiki-20241101-pages-articles-multistream1.xml-p1p41242.bz2"
-    
-    if command -v aria2c &> /dev/null; then
-        aria2c -x 4 -d dataset/sample "$SAMPLE_URL"
+
+    if [ -f scripts/download_wiki_history.sh ]; then
+        sh scripts/download_wiki_history.sh -v 2025-11 -s 2025-11 -e 2025-11
+        sh scripts/download_categories.sh
+        print_success "Sample data downloaded to dataset/"
     else
-        curl -L -o dataset/sample/sample.xml.bz2 "$SAMPLE_URL"
+        print_error "Sample data download script not found!"
+        print_info "You can create a sample dataset manually by downloading a small Wikipedia dump and placing it in dataset/sample"
     fi
-    
-    print_success "Sample data downloaded to dataset/sample/"
 else
     print_info "Skipping sample data download"
     print_info "You can download datasets later with: ./scripts/download_*.sh"
@@ -360,7 +359,7 @@ echo ""
 # Check what was set up
 SETUP_ITEMS=()
 
-if [ -f ~/.aws/credentials ]; then
+if [ -f aws/credentials ]; then
     SETUP_ITEMS+=("${GREEN}✓${NC} AWS credentials configured")
 else
     SETUP_ITEMS+=("${YELLOW}○${NC} AWS credentials not configured")
@@ -378,7 +377,7 @@ else
     SETUP_ITEMS+=("${YELLOW}○${NC} Project not built yet")
 fi
 
-if [ -d dataset/sample ] && [ "$(ls -A dataset/sample)" ]; then
+if [ -d dataset ] && [ "$(ls -A dataset" ]; then
     SETUP_ITEMS+=("${GREEN}✓${NC} Sample data downloaded")
 else
     SETUP_ITEMS+=("${YELLOW}○${NC} No sample data")
