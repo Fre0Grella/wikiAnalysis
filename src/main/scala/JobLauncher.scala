@@ -1,14 +1,16 @@
 object JobLauncher {
   def main(args: Array[String]): Unit = {
     if (args.length < 4) {
-      println("USAGE: JobLauncher <deployment-mode> <cat|bus|all> <overwrite|skip> <baseline|optimized>")
+      println(
+        "USAGE: JobLauncher <deployment-mode> <cat|bus|all> <overwrite|skip> <baseline|optimized>"
+      )
       println("  deployment-mode: local or remote")
-      println("  job: cat (category analysis), bus (bus factor), or all")
+      println("  job: cat (category analysis), bus (bus factor)")
       println("  write-rule: overwrite or skip")
       println("  version: baseline (non-optimized) or optimized")
       return
     }
-    
+
     val deploymentMode: String = args(0)
     val jobType: String        = args(1)
     val writeRule: String      =
@@ -39,18 +41,15 @@ object JobLauncher {
     (jobType, version) match {
       case ("cat", "baseline") =>
         NonOptimized_wikipediaCategoryAnalysis.main(Array(deploymentMode, writeRule))
-        
-      case ("cat", "optimized") =>
-        wikipediaCategoryAnalysis.main(Array(deploymentMode, writeRule))
-        
+
+      case ("cat", "optimized") => wikipediaCategoryAnalysis.main(Array(deploymentMode, writeRule))
+
       case ("bus", "baseline") =>
         NonOptimized_wikipediaBusFactorAnalysis.main(Array(deploymentMode, writeRule))
-        
-      case ("bus", "optimized") =>
-        wikipediaBusFactorAnalysis.main(Array(deploymentMode, writeRule))
 
-      case _ =>
-        System.err.println("Invalid job type. Use 'cat', 'bus', or 'all'.")
+      case ("bus", "optimized") => wikipediaBusFactorAnalysis.main(Array(deploymentMode, writeRule))
+
+      case _ => System.err.println("Invalid job type. Use 'cat', 'bus', or 'all'.")
     }
   }
 }

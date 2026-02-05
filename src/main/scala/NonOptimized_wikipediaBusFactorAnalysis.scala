@@ -3,7 +3,6 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.{ SparkConf, SparkContext }
 import utils.Commons
 
-import scala.collection.mutable
 import scala.util.Try
 
 object NonOptimized_wikipediaBusFactorAnalysis {
@@ -30,7 +29,6 @@ object NonOptimized_wikipediaBusFactorAnalysis {
 
     val conf = new SparkConf()
       .setAppName("Wikipedia Bus Factor BASELINE")
-      // ❌ NO shuffle optimizations
 
     val sc = new SparkContext(conf)
     Commons.initializeSparkContext(deploymentMode, sc)
@@ -41,23 +39,21 @@ object NonOptimized_wikipediaBusFactorAnalysis {
     Logger.getLogger("org.apache.spark.storage.MemoryStore").setLevel(Level.ERROR)
     Logger.getLogger("org.apache.spark.storage.BlockManager").setLevel(Level.ERROR)
 
-    // ❌ NO caching of decoder - will read from disk multiple times
-    val decoder = RootDecoder.fromTsv("output_baseline/root_category_indices.tsv")(sc, deploymentMode)
+    val decoder =
+      RootDecoder.fromTsv("output_baseline/root_category_indices.tsv")(sc, deploymentMode)
 
-    val categories    = sc.textFile(
+    val categories = sc.textFile(
       Commons.getDatasetPath(deploymentMode, "output_baseline/page_to_root_categories/part-*")
     )
-    
-    // ❌ NO persistence - will recompute when needed
+
     val articleTopics = categories
       .map(_.split("\t"))
       .map(data => (data(0).toInt, data(1).toLong))
 
-    val historyDump   = sc.textFile(
+    val historyDump = sc.textFile(
       Commons.getDatasetPath(deploymentMode, "dataset/wikimedia_dumps/*.tsv.bz2")
     )
-    
-    // ❌ NO persistence on filtered data
+
     val filteredInput = historyDump
       .map(_.split("\t", -1))
       .filter(filterEvent)
@@ -71,33 +67,30 @@ object NonOptimized_wikipediaBusFactorAnalysis {
           )
         )
       )
-      .join(articleTopics) // ❌ SHUFFLE: Regular join instead of optimized approach
+      .join(articleTopics)
       .map { case (pageId, ((title, user, bytesDiff), cats)) =>
-        (pageId, title, user, bytesDiff.toInt, decoder.categoriesFromMask(cats))
+        (pageId, title, user, bytesDiff, decoder.categoriesFromMask(cats))
       }
-      // ❌ NO coalesce after filter that reduces data significantly
 
-    // ❌ INEFFICIENT: Using groupByKey instead of reduceByKey
     val contributionPerUserPerCategory = filteredInput
       .flatMap { case (_, _, user, bytesDiff, cats) => cats.map(cat => ((user, cat), bytesDiff)) }
-      .groupByKey() // ❌ SHUFFLE: groupByKey moves all values, very expensive
+      .groupByKey()
       .mapValues(_.sum)
 
-    // ❌ INEFFICIENT: Complex aggregation without combineByKey optimization
     val busFactor = contributionPerUserPerCategory
       .map { case ((user, cat), bytes) => (cat, (user, bytes)) }
-      .groupByKey() // ❌ SHUFFLE: groupByKey instead of aggregateByKey
+      .groupByKey()
       .mapValues { userBytes =>
         val totalBytes = userBytes.map(_._2).sum
-        
-        // ❌ INEFFICIENT: Converting to array and sorting instead of using PriorityQueue during aggregation
+
+
         val allContributions = userBytes.toArray.sortBy(-_._2)
-        
+
         // Keep only top contributors
         val topContributions = allContributions.take(topBound)
-        
+
         val threshold = totalBytes * 0.5
-        
+
         val busFactor =
           topContributions
             .scanLeft(0L)(_ + _._2)
@@ -107,16 +100,15 @@ object NonOptimized_wikipediaBusFactorAnalysis {
             case idx => idx + 1
           }
 
-        (busFactor, totalBytes, topContributions)
+        (busFactor, totalBytes.toLong, topContributions)
       }
-      // ❌ NO persistence - will recompute for both outputs
 
     saveOutputs(
       busFactor,
       "output_baseline",
       sc
     )
-    
+
     println("Outputs saved to output_baseline/ directory.")
     println("======Wikipedia Bus Factor Analysis Job (BASELINE) Completed======")
     sc.stop()
@@ -142,7 +134,7 @@ object NonOptimized_wikipediaBusFactorAnalysis {
     val busFactorPath      = Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor")
     val topContributorPath = Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors")
     val busFactorFile      = Commons.getDatasetPath(deploymentMode, dirPath + "/bus_factor.tsv")
-    val topContribFile     = Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors.tsv")
+    val topContribFile = Commons.getDatasetPath(deploymentMode, dirPath + "/top_contributors.tsv")
 
     if (
       writeRule == 1 && Commons.exists(sc, busFactorFile) && Commons.exists(
@@ -154,7 +146,8 @@ object NonOptimized_wikipediaBusFactorAnalysis {
       return
     }
 
-    val decoder = RootDecoder.fromTsv("output_baseline/root_category_indices.tsv")(sc, deploymentMode)
+    val decoder =
+      RootDecoder.fromTsv("output_baseline/root_category_indices.tsv")(sc, deploymentMode)
 
     // Save bus_factor
     Commons.deleteIfExists(sc, busFactorPath)
@@ -188,10 +181,4 @@ object NonOptimized_wikipediaBusFactorAnalysis {
     println(s"✓ Saved: $topContribFile")
   }
 
-  case class UserContribution(
-    page_id: Int,
-    page_title: String,
-    event_user_text: String,
-    revision_text_bytes_diff: Int
-  )
 }

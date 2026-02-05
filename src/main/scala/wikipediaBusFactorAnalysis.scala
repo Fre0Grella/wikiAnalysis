@@ -1,4 +1,3 @@
-import org.apache.hadoop.fs.{ FileSystem, Path }
 import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
@@ -106,7 +105,7 @@ object wikipediaBusFactorAnalysis {
       )
       .mapValues { case (totalBytes, queue) =>
         val threshold = totalBytes * 0.5
-        val sorted    = queue.toArray.sortBy(-_._2)
+        val sorted    = queue.dequeueAll.toArray
 
         val busFactor =
           sorted
@@ -197,11 +196,4 @@ object wikipediaBusFactorAnalysis {
     println(s"✓ Saved: $busFactorFile")
     println(s"✓ Saved: $topContribFile")
   }
-
-  case class UserContribution(
-    page_id: Int,
-    page_title: String,
-    event_user_text: String,
-    revision_text_bytes_diff: Int
-  )
 }

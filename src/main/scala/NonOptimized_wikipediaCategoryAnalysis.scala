@@ -1,7 +1,6 @@
 import org.apache.log4j.{ Level, Logger }
 import org.apache.spark.rdd.RDD
 import org.apache.spark.{ SparkConf, SparkContext }
-import org.apache.hadoop.fs.{ FileSystem, Path }
 import utils.Commons
 
 import scala.util.{ Random, Try }
@@ -24,14 +23,10 @@ object NonOptimized_wikipediaCategoryAnalysis {
   case class LinkTarget(lt_id: Int, lt_namespace: Int, lt_title: String)
 
   // CategoryLink: (From_Page_ID, Type, Target_Category_ID)
-  // CHANGED: cl_target_id is now Int (Foreign Key to LinkTarget)
   case class CategoryLink(cl_from: Int, cl_type: String, cl_target_id: Int)
 
   // Page: (ID, Title) - Schema confirmed
   case class Page(page_id: Int, page_title: String)
-
-  // HierarchyNode: (ID, Title, Children_IDs)
-  case class HierarchyNode(page_id: Int, page_title: String, childs_id: Set[Int])
 
   // ========== HELPER FUNCTIONS ==========
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
@@ -266,7 +261,7 @@ object NonOptimized_wikipediaCategoryAnalysis {
   // 3. Uses groupByKey instead of reduceByKey where possible
   // 4. NO coalesce to reduce partitions
   // 5. Keeps checkpointing (necessary for lineage management)
-  @SuppressWarnings(Array("org.wartremover.warts.While"))
+  @SuppressWarnings(Array("org.wartremover.warts.While","org.wartremover.warts.IterableOps"))
   private def buildPageToRootsMap_baseline(
     K: Int, // Max number of roots per article/category
     linkTargetRDD: RDD[LinkTarget],
@@ -275,8 +270,6 @@ object NonOptimized_wikipediaCategoryAnalysis {
     sc: SparkContext
   )(implicit deploymentMode: String, writeRule: Int): RDD[(Int, RootMask)] = {
 
-    // ❌ NO PERSISTENCE - will recompute multiple times
-    
     // A. Identify Roots
     val rootMap = identifyRootCategories(linkTargetRDD, categoryLinksRDD, pageRDD)
     println(s"Roots: ${rootMap.mkString(", ")}")
@@ -312,20 +305,19 @@ object NonOptimized_wikipediaCategoryAnalysis {
         m1
     }
 
-    // ❌ INEFFICIENT: Regular join instead of using already prepared data
     val pg = pageRDD.map(pg => (pg.page_id, pg.page_title))
     val lt = linkTargetRDD.map(lt => (lt.lt_title, lt.lt_id))
-    
+
     // B. Build skeleton with REGULAR JOINS (causes shuffles)
     val skeleton = categoryLinksRDD
       .filter(_.cl_type == "subcat")
       .map(cl => (cl.cl_from, cl.cl_target_id))
-      .join(pg) // ❌ SHUFFLE 1: Regular join instead of more efficient approach
+      .join(pg)
       .map { case (id, (targetId, title)) => (title, (id, targetId)) }
-      .join(lt) // ❌ SHUFFLE 2: Another regular join
+      .join(lt)
       .map { case (_, ((page_id, targetId), page_LtId)) => (targetId, (page_id, page_LtId)) }
 
-    // ❌ NO PERSISTENCE on skeleton - will be recomputed many times
+
     val skellyCount = skeleton.count()
     printf("Category Skeleton has %d edges.\n", skellyCount)
 
@@ -343,16 +335,15 @@ object NonOptimized_wikipediaCategoryAnalysis {
       iteration += 1
       printf(" Iteration %d: Active Frontier Size = %d\n", iteration, count)
 
-      // ❌ INEFFICIENT: Using groupByKey instead of reduceByKey
       val propagated = activeFrontier
-        .join(skeleton) // ❌ SHUFFLE: Join without broadcast
+        .join(skeleton)
         .map { case (_, ((_, parentMask), (childPageId, childLtId))) =>
           (childLtId, (childPageId, parentMask))
         }
-        // ❌ NO COALESCE - keeps high partition count even after filtering
+
 
       val updated = propagated
-        .leftOuterJoin(allAssignments) // ❌ SHUFFLE: Another regular join
+        .leftOuterJoin(allAssignments)
         .flatMap { case (ltId, ((pageId, newMask), optExisting)) =>
           optExisting match {
             case Some((_, existingMask)) =>
@@ -365,32 +356,26 @@ object NonOptimized_wikipediaCategoryAnalysis {
                 else
                   List((ltId, (pageId, combined)))
               }
-            case None                    =>
-              List((ltId, (pageId, newMask)))
+            case None                    => List((ltId, (pageId, newMask)))
           }
         }
-      
-      // ❌ NO UNPERSIST - memory leak over iterations
+
       activeFrontier = updated
-      // ❌ NO PERSISTENCE HERE - will recompute entire lineage
 
       count = activeFrontier.count()
-      
+
       if (count > 0) {
-        // ❌ INEFFICIENT: Using groupByKey instead of reduceByKey
         val merged = allAssignments
           .union(activeFrontier)
-          // ❌ NO COALESCE after union
-          .groupByKey() // ❌ SHUFFLE: groupByKey instead of reduceByKey (moves all data)
+          .groupByKey()
           .mapValues { vals =>
             val (pageId, mask) = vals.head
-            val finalMask = vals.map(_._2).reduce(mergeMasks)
+            val finalMask      = vals.map(_._2).reduce(mergeMasks)
             (pageId, finalMask)
           }
 
         allAssignments = merged
 
-        // ✅ KEEP CHECKPOINTING - necessary for lineage truncation
         if (iteration % 3 == 0) {
           printf("  → Checkpointing at iteration %d...\n", iteration)
           val cp = allAssignments
@@ -405,24 +390,21 @@ object NonOptimized_wikipediaCategoryAnalysis {
 
     printf("Completed a total of %d categories of %d total.\n", allAssignments.count(), skellyCount)
 
-    // ❌ NO PERSISTENCE on results
 
-    // C. ❌ NO BROADCAST - Regular expensive join
     println("Mapping articles to categories (using regular join - expensive)...")
-    
+
     // Convert allAssignments to (ltId -> mask) for joining
     val categoryMasks = allAssignments
       .map { case (ltId, (_, mask)) => (ltId, mask) }
-    
-    // ❌ HUGE SHUFFLE: Join millions of article links with category masks
+
     val finalPageRoots = categoryLinksRDD
       .filter(_.cl_type == "page")
       .map(cl => (cl.cl_target_id, cl.cl_from)) // (categoryLtId, articlePageId)
-      .join(categoryMasks) // ❌ MASSIVE SHUFFLE instead of broadcast join
+      .join(categoryMasks)
       .map { case (_, (articlePageId, mask)) => (articlePageId, mask) }
-      .groupByKey() // ❌ Another groupByKey instead of reduceByKey
+      .groupByKey()
       .mapValues(masks => masks.reduce(mergeMasks))
-    
+
     printf(
       "Mapped a total of %d articles out of %d category links.\n",
       finalPageRoots.count(),
@@ -432,12 +414,13 @@ object NonOptimized_wikipediaCategoryAnalysis {
     // B) Category-side mapping - also using inefficient pattern
     val categoryRoots: RDD[(Int, RootMask)] = allAssignments
       .map { case (_, (pageId, mask)) => (pageId, mask) }
-      .groupByKey() // ❌ groupByKey instead of reduceByKey
+      .groupByKey()
       .mapValues(masks => masks.reduce(mergeMasks))
 
     // Final union and merge
-    finalPageRoots.union(categoryRoots)
-      .groupByKey() // ❌ Final groupByKey
+    finalPageRoots
+      .union(categoryRoots)
+      .groupByKey()
       .mapValues(masks => masks.reduce(mergeMasks))
   }
 
@@ -457,7 +440,7 @@ object NonOptimized_wikipediaCategoryAnalysis {
   }
 
   // ========== MAIN ==========
-
+  @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
   def main(args: Array[String]): Unit = {
 
     implicit val deploymentMode: String =
@@ -474,19 +457,18 @@ object NonOptimized_wikipediaCategoryAnalysis {
 
     val conf = new SparkConf()
       .setAppName("WikipediaCategoryAnalysis_BASELINE")
-      // ❌ NO shuffle optimizations configured
-      // The optimized version has these:
-      // .set("spark.shuffle.manager", "sort")
-      // .set("spark.shuffle.compress", "true")
-      // .set("spark.shuffle.spill.compress", "true")
-      // .set("spark.io.compression.codec", "lz4")
+    // ❌ NO shuffle optimizations configured
+    // The optimized version has these:
+    // .set("spark.shuffle.manager", "sort")
+    // .set("spark.shuffle.compress", "true")
+    // .set("spark.shuffle.spill.compress", "true")
+    // .set("spark.io.compression.codec", "lz4")
 
     implicit val sc: SparkContext = new SparkContext(conf)
     Commons.initializeSparkContext(deploymentMode, sc)
     println("======Starting Wikipedia Category Analysis Job (BASELINE - NON-OPTIMIZED)======")
     sc.setLogLevel("WARN")
 
-    // ✅ KEEP checkpointing - necessary for lineage management
     sc.setCheckpointDir(Commons.getDatasetPath(deploymentMode, "checkpoints_baseline"))
 
     Logger.getLogger("org.apache.spark.storage.MemoryStore").setLevel(Level.ERROR)
@@ -501,13 +483,14 @@ object NonOptimized_wikipediaCategoryAnalysis {
       if (
         writeRule == 1 && Commons.exists(
           sc,
-          Commons.getDatasetPath(deploymentMode, "output_baseline/page_to_root_categories/._SUCCESS.crc")
+          Commons
+            .getDatasetPath(deploymentMode, "output_baseline/page_to_root_categories/._SUCCESS.crc")
         )
       ) {
         println("Output already exists. Skipping computation as per write rule.")
         return
       }
-      
+
       // 1. Load Data
       val linktarget    = parseLinktarget(sc, linktarget_path)
       val categorylinks = parseCategorylinks(sc, categorylinks_path)
@@ -523,67 +506,12 @@ object NonOptimized_wikipediaCategoryAnalysis {
 
       println("\nSample Page to Root Categories Mapping:")
 
-      val decoder = RootDecoder.fromTsv("output_baseline/root_category_indices.tsv")(sc, deploymentMode)
+      val decoder =
+        RootDecoder.fromTsv("output_baseline/root_category_indices.tsv")(sc, deploymentMode)
       sample.foreach { case (pageId, roots) =>
         println(s"Page ID: $pageId -> Roots: ${decoder.decode(roots).mkString(", ")}")
       }
 
     } finally sc.stop()
-  }
-}
-
-// Decoder is the same - reuse from optimized version
-@SuppressWarnings(Array("org.wartremover.warts.While"))
-final case class RootDecoder(idxToName: Vector[String]) {
-  private type RootMask = Long
-
-  def decode(mask: RootMask): Set[String] = {
-    var i   = 0
-    var acc = Set.empty[String]
-    val max = idxToName.length
-    while (i < max) {
-      if ((mask & (1L << i)) != 0L)
-        acc += idxToName(i)
-      i += 1
-    }
-    acc
-  }
-
-  def categoriesFromMask(mask: Long): Set[Int] = {
-    var m   = mask
-    var bit = 0
-    var res = Set.empty[Int]
-
-    while (m != 0L && bit < 64) {
-      if ((m & 1L) != 0L)
-        res += bit
-      m = m >>> 1
-      bit += 1
-    }
-    res
-  }
-
-  def idToString(id: Int): String = idxToName(id)
-}
-
-object RootDecoder {
-  @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
-  def fromTsv(path: String)(sc: SparkContext, deploymentMode: String): RootDecoder = {
-    val lines = sc.textFile(Commons.getDatasetPath(deploymentMode, path))
-    val pairs =
-      lines
-        .map { line =>
-          val Array(_, title, idxStr) = line.split("\t", 3)
-          (idxStr.toInt, title)
-        }
-        .collect()
-        .toSeq
-
-    val maxIdx    = pairs.map(_._1).max
-    val idxToName = Array.fill[String](maxIdx + 1)("")
-
-    pairs.foreach { case (i, name) => idxToName(i) = name }
-
-    RootDecoder(idxToName.toVector)
   }
 }
