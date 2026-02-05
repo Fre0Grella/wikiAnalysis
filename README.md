@@ -577,7 +577,7 @@ wikipedia-spark-analysis/
 ├── src/main/scala/
 │   ├── JobLauncher.scala                          # Entry point - routes to jobs
 │   ├── wikipediaCategoryAnalysis.scala            # Optimized category analysis
-│   ├── wikipediaCategoryAnalysis_baseline.scala   # Baseline (non-optimized)
+│   ├── NonOptimized_wikipediaCategoryAnalysis.scala   # Baseline (non-optimized)
 │   ├── wikipediaBusFactorAnalysis.scala           # Optimized bus factor
 │   ├── NonOptimized_wikipediaBusFactorAnalysis.scala  # Baseline bus factor
 │   ├── mediaWikiHistorySchema.scala               # Schema definitions
@@ -591,12 +591,12 @@ wikipedia-spark-analysis/
 ├── scripts/
 │   ├── download_wiki_history.sh                   # Download revision history
 │   ├── download_categories.sh                     # Download category dumps
+│   ├── setup.sh                                   # Initialization script
 │   └── split_stream.py                            # SQL dump line splitter
 │
 ├── dataset/                                        # Local datasets (gitignored)
 │   ├── wikimedia_dumps/                           # Revision history
-│   ├── categories_dump/                           # Category structure
-│   └── sample/                                    # 10MB sample for testing
+│   └── categories_dump/                           # Category structure
 │
 ├── output/                                         # Optimized job outputs
 ├── output_baseline/                                # Baseline job outputs
@@ -604,7 +604,6 @@ wikipedia-spark-analysis/
 │
 ├── docs/
 │   ├── PERFORMANCE_ANALYSIS.md                    # Performance report template
-│   ├── METRICS_COLLECTION_GUIDE.md                # How to collect metrics
 │   └── OPTIMIZATION_DIFFERENCES.md                # Optimization details
 │
 ├── build.sbt                                       # SBT build configuration
