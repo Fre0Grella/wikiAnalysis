@@ -8,39 +8,36 @@ A distributed data analysis project that processes Wikipedia's entire revision h
 
 ## 📋 Table of Contents
 
-- [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Dataset Setup](#dataset-setup)
-- [Configuration](#configuration)
-- [Running Locally](#running-locally)
-- [Running on AWS EMR](#running-on-aws-emr)
-- [Understanding the Output](#understanding-the-Output)
-- [Project Structure](#project-structure)
-- [Performance Analysis](#performance-analysis)
-- [Development](#development)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
+- [Overview](#-overview)
+- [Features](#-features)
+- [Architecture](#-architecture)
+- [Prerequisites](#-prerequisites)
+- [Installation](#-installation)
+- [Dataset Setup](#-dataset-setup)
+- [Configuration](#-configuration)
+- [Running Locally](#-running-locally)
+- [Running on AWS EMR](#-running-on-aws-emr)
+- [Understanding the Output](#-understanding-the-output)
+- [Project Structure](#-project-structure)
+- [Performance Analysis](#-performance-analysis)
+- [Troubleshooting](#-troubleshooting)
+- [License](#-license)
 
 ---
 
-## 🎯 Overview 
+## 🎯 Overview
 
-This project performs large-scale analysis on Wikipedia data (47+ GB compressed) to:
+This project performs large-scale analysis on Wikipedia data (Up to 100+ GB compressed) to:
 
 1. **Category Classification**: Maps Wikipedia articles to root topic categories using an iterative label propagation algorithm
 2. **Bus Factor Analysis**: Calculates the "bus factor" for each topic category (minimum contributors needed for 50% of content)
 
-The implementation demonstrates advanced Spark optimization techniques including broadcast joins, strategic persistence, and efficient aggregation patterns, achieving **40% performance improvement** over baseline implementations.
+The implementation demonstrates advanced Spark optimization techniques including broadcast joins, strategic persistence, and efficient aggregation patterns, achieving **X% performance improvement** over baseline implementations.
 
 ### Key Metrics
-- **Dataset Size**: 47 GB compressed, ~200M+ records
-- **Processing Time**: ~28 minutes (optimized) vs ~45 minutes (baseline)
-- **Shuffle Reduction**: 48% less data shuffled
-- **Cost Savings**: 37% reduction in compute costs
+- **Used Dataset Size**: 37,5 GB compressed
+- **Processing Time**: ~X minutes (optimized) vs ~X minutes (baseline)
+- **Shuffle Reduction**: X% less data shuffled
 
 ---
 
@@ -58,7 +55,7 @@ The implementation demonstrates advanced Spark optimization techniques including
   - LZ4 compression for shuffle optimization
 
 - **Scalable Data Pipeline**:
-  - Custom SQL dump parser for Wikipedia data
+  - Custom SQL dump parser for custom Wikipedia dataset size
   - Parallel download scripts with aria2c support
   - Splittable compression (bzip2) for distributed processing
   - Checkpoint-based lineage truncation for iterative algorithms
@@ -66,51 +63,13 @@ The implementation demonstrates advanced Spark optimization techniques including
 - **Comprehensive Analysis**:
   - Hierarchical category propagation with bitmask encoding
   - Top-N contributors tracking with PriorityQueue
-  - Dual-output generation (bus factor + top contributors)
+  - 2 output generation (bus factor + top contributors)
 
 ---
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Wikipedia Data Sources                    │
-├─────────────────┬─────────────────┬─────────────────────────┤
-│  History Dumps  │ Category Links  │    Page Metadata        │
-│   (2001-2025)   │  (SQL Dumps)    │    (SQL Dumps)          │
-└────────┬────────┴────────┬────────┴────────┬────────────────┘
-         │                 │                 │
-         ▼                 ▼                 ▼
-    ┌────────────────────────────────────────────┐
-    │         Download & Preprocessing           │
-    │  (Parallel download, format conversion)    │
-    └────────────────┬───────────────────────────┘
-                     │
-                     ▼
-    ┌────────────────────────────────────────────┐
-    │          Apache Spark Processing           │
-    ├────────────────────────────────────────────┤
-    │  Job 1: Category Analysis                  │
-    │  ├─ Parse SQL dumps                        │
-    │  ├─ Identify root categories               │
-    │  ├─ Iterative label propagation            │
-    │  └─ Map articles to root categories        │
-    │                                             │
-    │  Job 2: Bus Factor Analysis                │
-    │  ├─ Load category mappings                 │
-    │  ├─ Join with revision history             │
-    │  ├─ Aggregate contributions by user/cat    │
-    │  └─ Calculate bus factor metrics           │
-    └────────────────┬───────────────────────────┘
-                     │
-                     ▼
-    ┌────────────────────────────────────────────┐
-    │              Output Results                 │
-    │  - page_to_root_categories.tsv             │
-    │  - bus_factor.tsv                          │
-    │  - top_contributors.tsv                    │
-    └────────────────────────────────────────────┘
-```
+![Architecture Diagram](docs/Architecture.png)
 
 ### Algorithm: Iterative Label Propagation
 
@@ -131,9 +90,9 @@ Uses bitmask encoding for efficient storage (64 categories in a single Long).
 ## 🔧 Prerequisites
 
 ### System Requirements
-- **OS**: Linux/macOS (Windows via WSL2)
+- **OS**: Linux/macOS/Windows 11
 - **RAM**: 8 GB minimum (16+ GB recommended)
-- **Disk**: 100 GB free space for datasets
+- **Disk**: 150+ GB free space for full datasets
 - **Java**: JDK 8 or 11
 - **Scala**: 2.12.x
 - **Spark**: 3.5.0 or later
@@ -223,8 +182,8 @@ aws --version
 
 ```bash
 cd wikipedia-spark-analysis
-sbt clean compile
-sbt package
+sh scripts/setup.sh
+sbt assembly
 ```
 
 This creates: `target/scala-2.12/wikipedia-analysis_2.12-1.0.jar`
@@ -237,7 +196,7 @@ This creates: `target/scala-2.12/wikipedia-analysis_2.12-1.0.jar`
 
 The project includes scripts to download Wikipedia dumps automatically.
 
-#### Download Revision History (47 GB):
+#### Download Revision History (~500 MB for monthly dump):
 ```bash
 # Download history for 2024 (adjust date range as needed)
 ./scripts/download_wiki_history.sh -s 2024-01 -e 2024-12
@@ -251,9 +210,9 @@ The project includes scripts to download Wikipedia dumps automatically.
 #   -n             Dry run (generate URLs only)
 ```
 
-**Download time**: 2-4 hours with aria2c (parallel), 6-8 hours with curl (sequential)
+**Download time**: faster with aria2c (parallel), x3-4 time slower with curl (sequential)
 
-#### Download Category Structure (~15 GB):
+#### Download Category Structure (~5 GB):
 ```bash
 # Download latest category dumps
 ./scripts/download_categories.sh
@@ -264,8 +223,6 @@ The project includes scripts to download Wikipedia dumps automatically.
 #   -D, --dir DIRECTORY     Download directory (default: ./dataset/sql_dumps)
 #   -n, --dry-run           Show what would happen
 ```
-
-**Download time**: 30-60 minutes
 
 ### Manual Download
 
@@ -283,38 +240,29 @@ dataset/
     └── enwiki-YYYYMMDD-page.sql.bz2
 ```
 
-### Create Sample Dataset (for Testing)
-
-```bash
-# Create 10MB sample from history dump
-head -n 50000 dataset/wikimedia_dumps/2025-11.enwiki.2024-01.tsv.bz2 > dataset/sample.tsv
-
-# Or use existing sample
-mkdir -p dataset/sample/
-# Copy your 10MB sample here
-```
-
 ---
 
 ## ⚙️ Configuration
 
 ### 1. AWS Credentials Setup
 
+Is recommended to follow the setup.sh script, but here are the steps for a manual configuratio
+
 #### For AWS CLI (S3 and EMR operations):
 
-Create `~/.aws/` directory structure:
+Create `aws/` directory structure:
 ```bash
-mkdir -p ~/.aws
+mkdir -p aws
 ```
 
-**File 1: `~/.aws/credentials`**
+**File 1: `aws/credentials`**
 ```ini
 [default]
 aws_access_key_id = YOUR_ACCESS_KEY_ID
 aws_secret_access_key = YOUR_SECRET_ACCESS_KEY
 ```
 
-**File 2: `~/.aws/config`**
+**File 2: `aws/config`**
 ```ini
 [default]
 region = us-east-1
@@ -332,12 +280,6 @@ mkdir -p src/main/resources
 ```
 YOUR_ACCESS_KEY_ID
 YOUR_SECRET_ACCESS_KEY
-```
-
-**⚠️ IMPORTANT**: Add to `.gitignore`:
-```bash
-echo "src/main/resources/aws_credentials" >> .gitignore
-echo ".aws/" >> .gitignore
 ```
 
 ### 2. Project Configuration
@@ -381,7 +323,7 @@ aws s3 sync dataset/categories_dump/ s3://your-bucket-name-here/datasets/categor
 
 ```bash
 # Build
-sbt package
+sbt assembly
 
 # Run optimized version on sample data
 spark-submit \
@@ -390,7 +332,8 @@ spark-submit \
   --driver-memory 4g \
   --executor-memory 4g \
   target/scala-2.12/wikipedia-analysis_2.12-1.0.jar \
-  local all overwrite optimized
+  local [cat|bus] overwrite optimized
+  
 ```
 
 ### Run Specific Jobs
@@ -402,8 +345,6 @@ spark-submit --class JobLauncher ... local cat overwrite optimized
 # Bus factor analysis only
 spark-submit --class JobLauncher ... local bus overwrite optimized
 
-# Baseline (non-optimized) version
-spark-submit --class JobLauncher ... local all overwrite baseline
 ```
 
 ### Command Line Arguments
@@ -425,8 +366,6 @@ JobLauncher <deployment-mode> <job-type> <write-rule> <version>
 # Spark UI (while running)
 open http://localhost:4040
 
-# View logs
-tail -f /tmp/spark-events/*
 ```
 
 ### Output Locations
@@ -455,8 +394,8 @@ output/
 2. Choose:
    - **Release**: emr-7.0.0 (Spark 3.5.0)
    - **Applications**: Spark, Hadoop
-   - **Instance type**: m5.xlarge or larger
-   - **Number of instances**: 1 master + 4 core
+   - **Instance type**: m4.xlarge or larger
+   - **Number of instances**: 1 master + n core
    - **EC2 key pair**: Select your SSH key
 
 3. Under "Security configuration":
@@ -470,7 +409,7 @@ aws emr create-cluster \
   --release-label emr-7.0.0 \
   --applications Name=Spark Name=Hadoop \
   --ec2-attributes KeyName=your-key-pair,SubnetId=subnet-xxxxx \
-  --instance-type m5.xlarge \
+  --instance-type m4.xlarge \
   --instance-count 5 \
   --use-default-roles \
   --log-uri s3://your-bucket-name-here/spark-logs/ \
@@ -486,33 +425,27 @@ sbt package
 aws s3 cp target/scala-2.12/wikipedia-analysis_2.12-1.0.jar \
     s3://your-bucket-name-here/jars/
 ```
-
-### 3. Submit Spark Job via EMR
-
-#### Submit via AWS Console:
-1. Go to your cluster → Steps → Add step
-2. Choose "Spark application"
-3. Configure:
-   - **Deploy mode**: Cluster
-   - **Application location**: `s3://your-bucket-name-here/jars/wikipedia-analysis_2.12-1.0.jar`
-   - **Main class**: `JobLauncher`
-   - **Arguments**: `remote all overwrite optimized`
-   - **Action on failure**: Continue
-
-#### Submit via AWS CLI:
-```bash
-aws emr add-steps \
-  --cluster-id j-XXXXXXXXXXXXX \
-  --steps Type=Spark,Name="Wikipedia-Analysis-Optimized",\
-ActionOnFailure=CONTINUE,\
-Args=[--class,JobLauncher,\
---deploy-mode,cluster,\
---driver-memory,4g,\
---executor-memory,8g,\
---executor-cores,2,\
-s3://your-bucket-name-here/jars/wikipedia-analysis_2.12-1.0.jar,\
-remote,all,overwrite,optimized]
-```
+### 3. Submit Job via IntellijIDEA (Recommended)
+Define a new Run/Debug Configuration with the following settings:
+- Configuration type: Spark Submit - Cluster
+- Name: Spark Cluster
+- Region: us-east-1
+- Remote Target: Add EMR connection
+- Authentication type: Profile from credentials file
+- Select "Set custom config" and give the paths to the "config" and "credential" files
+- Click on "Test connection" to verify
+- Enter a new SSH Configuration
+- Host: the address of the primary node of the cluster, i.e., the MasterPublicDnsName (see [AWS CLI cheatsheet]())
+- Username: hadoop
+- Authentication type: Key pair
+- Private key file: point to your .ppk
+- Test the connection
+- Application: point to the .jar file   inside   the build/libs folder of this   repository; if   you don't find it, build the   project
+- Class: JobLauncher
+- Run arguments: Select your desired configuration, e.g.:`remote all overwrite optimized`
+- Before launch: Upload Files Through SFTP
+- Hit the Run button and wait for the application to finish (you should see "final status: SUCCEEDED" in the last Application report).
+- Check out the results in the "output" folder in your S3 bucket (via CLI or GUI).7
 
 ### 4. Submit via SSH (Alternative)
 
@@ -582,11 +515,6 @@ cat output_aws/top_contributors.tsv
 ```bash
 aws emr terminate-clusters --cluster-ids j-XXXXXXXXXXXXX
 ```
-
-**💰 Cost Estimation:**
-- m5.xlarge: ~$0.192/hour (on-demand)
-- 5 instances × 0.5 hours = ~$0.50 per run
-- Use Spot instances for 70% savings
 
 ---
 
@@ -692,180 +620,14 @@ wikipedia-spark-analysis/
 
 ```bash
 # Run baseline
-spark-submit --class JobLauncher ... remote all overwrite baseline
+spark-submit --class JobLauncher ... remote cat overwrite baseline
+spark-submit --class JobLauncher ... remote bus overwrite baseline
+
 
 # Run optimized
-spark-submit --class JobLauncher ... remote all overwrite optimized
-```
+spark-submit --class JobLauncher ... remote cat overwrite optimized
+spark-submit --class JobLauncher ... remote bus overwrite optimized
 
-### Collect Metrics
-
-Follow the guide in `docs/METRICS_COLLECTION_GUIDE.md` to:
-1. Access Spark UI / History Server
-2. Download DAG visualizations
-3. Collect shuffle metrics
-4. Export event logs
-5. Calculate cost savings
-
-### Expected Performance Gains
-
-| Metric | Baseline | Optimized | Improvement |
-|--------|----------|-----------|-------------|
-| **Runtime** | 45 min | 28 min | **38% faster** |
-| **Shuffle Write** | 245 GB | 128 GB | **48% reduction** |
-| **Shuffle Read** | 238 GB | 125 GB | **47% reduction** |
-| **Peak Memory** | 32 GB | 28 GB | **12% less** |
-| **Disk Spill** | 45 GB | 8 GB | **82% reduction** |
-| **Cost** | $0.72 | $0.45 | **37% savings** |
-
-### Key Optimizations Applied
-
-1. **Broadcast Join**: Eliminated 180GB shuffle by broadcasting small category map
-2. **ReduceByKey over GroupByKey**: 50% shuffle reduction via map-side combine
-3. **Strategic Persistence**: Reduced recomputation by 60%
-4. **Coalesce After Filters**: Better partition utilization
-5. **LZ4 Compression**: 30% smaller shuffle files
-
-See `docs/OPTIMIZATION_DIFFERENCES.md` for detailed code comparisons.
-
----
-
-## 💻 Development
-
-### IntelliJ IDEA Setup
-
-#### 1. Import Project
-```bash
-# Open IntelliJ IDEA
-File → Open → Select project directory
-
-# Import as SBT project
-# Wait for dependencies to download (~5 minutes)
-```
-
-#### 2. Configure Scala SDK
-```bash
-File → Project Structure → Global Libraries
-→ Add → Scala SDK → Download → Select 2.12.18
-```
-
-#### 3. Configure Spark Libraries
-```bash
-File → Project Structure → Libraries
-→ Add → Java → Select /opt/spark/jars/*.jar
-```
-
-#### 4. Run Configuration
-
-Create run configuration:
-```bash
-Run → Edit Configurations → Add → Application
-
-Main class: JobLauncher
-Program arguments: local cat overwrite optimized
-VM options: -Xmx4g
-Working directory: $PROJECT_DIR$
-```
-
-#### 5. Enable Scala Formatting (Optional)
-```bash
-# Install scalafmt plugin
-File → Settings → Plugins → Search "scalafmt" → Install
-
-# Configure
-File → Settings → Editor → Code Style → Scala
-→ Formatter: Scalafmt
-```
-
-### Remote Development Setup
-
-#### SSH to EMR Master Node
-```bash
-ssh -i your-key.pem hadoop@<master-public-dns>
-```
-
-#### Mount Remote Filesystem (SSHFS)
-```bash
-# Install SSHFS
-sudo apt install sshfs  # Ubuntu
-brew install sshfs      # macOS
-
-# Mount
-mkdir ~/emr-mount
-sshfs -o IdentityFile=your-key.pem hadoop@<master-dns>:/home/hadoop ~/emr-mount
-
-# Now you can edit files locally with IntelliJ and they sync to EMR!
-```
-
-#### IntelliJ Remote Development (JetBrains Gateway)
-```bash
-# Install JetBrains Gateway
-# Download from: https://www.jetbrains.com/remote-development/gateway/
-
-# Connect to remote
-Gateway → New Connection → SSH
-Host: <master-public-dns>
-Port: 22
-Username: hadoop
-Authentication: Key pair (your-key.pem)
-
-# Open project on remote
-# IntelliJ runs on remote, UI on local!
-```
-
-### Testing
-
-```bash
-# Run with sample data for quick iteration
-spark-submit \
-  --class JobLauncher \
-  --master local[2] \
-  --driver-memory 2g \
-  target/scala-2.12/wikipedia-analysis_2.12-1.0.jar \
-  local cat overwrite optimized
-
-# Check output
-ls -lh output/
-head output/root_category_indices.tsv
-```
-
-### Debugging
-
-#### Enable Debug Logs
-```scala
-// In your job code
-sc.setLogLevel("DEBUG")  // Instead of "WARN"
-```
-
-#### Spark UI for Debugging
-```bash
-# Access while job runs
-open http://localhost:4040
-
-# Check:
-# - Stages → Failed stages
-# - Executors → Stderr logs
-# - SQL/DAG → Execution plan
-```
-
-#### Common Issues
-
-**OutOfMemoryError**:
-```bash
-# Increase driver/executor memory
-spark-submit --driver-memory 8g --executor-memory 8g ...
-```
-
-**Shuffle Fetch Failed**:
-```bash
-# Increase shuffle partitions
---conf spark.sql.shuffle.partitions=400
-```
-
-**Task Not Serializable**:
-```scala
-// Make sure all closures only use serializable objects
-// Move non-serializable variables outside map/filter functions
 ```
 
 ---
@@ -1057,126 +819,30 @@ diff output/bus_factor.tsv output_baseline/bus_factor.tsv
 
 # If different, there's a bug - please open an issue!
 ```
+#### Common Development Issues
 
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how:
-
-### 1. Fork the Repository
+**OutOfMemoryError**:
 ```bash
-# Click "Fork" on GitHub
-# Clone your fork
-git clone https://github.com/yourname/wikipedia-spark-analysis.git
+# Increase driver/executor memory
+spark-submit --driver-memory 8g --executor-memory 8g ...
 ```
 
-### 2. Create a Branch
+**Shuffle Fetch Failed**:
 ```bash
-git checkout -b feature/your-feature-name
+# Increase shuffle partitions
+--conf spark.sql.shuffle.partitions=400
 ```
 
-### 3. Make Changes
-```bash
-# Edit code
-# Test locally
-spark-submit --class JobLauncher ... local all overwrite optimized
-
-# Verify outputs
-diff output/bus_factor.tsv output_baseline/bus_factor.tsv
+**Task Not Serializable**:
+```scala
+// Make sure all closures only use serializable objects
+// Move non-serializable variables outside map/filter functions
 ```
-
-### 4. Commit and Push
-```bash
-git add .
-git commit -m "Add feature: description"
-git push origin feature/your-feature-name
-```
-
-### 5. Open Pull Request
-- Go to your fork on GitHub
-- Click "New Pull Request"
-- Describe your changes
-- Link any related issues
-
-### Code Style
-
-- Follow Scala best practices
-- Use meaningful variable names
-- Add comments for complex logic
-- Run `scalafmt` before committing
-
-### Testing Guidelines
-
-- Test on sample data first (10 MB)
-- Verify both baseline and optimized versions
-- Ensure outputs match between versions
-- Check performance metrics improve
-
 ---
 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-```
-MIT License
-
-Copyright (c) 2025 [Your Name]
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
----
-
-## 🙏 Acknowledgments
-
-- **Wikipedia / Wikimedia Foundation**: For providing comprehensive datasets
-- **Apache Spark**: For the distributed computing framework
-- **University of Bologna**: For the Big Data course that inspired this project
-
----
-
-## 📞 Contact
-
-- **Author**: Your Name
-- **Email**: your.email@example.com
-- **GitHub**: [@yourusername](https://github.com/yourusername)
-- **LinkedIn**: [Your Profile](https://linkedin.com/in/yourprofile)
-
----
-
-## 🔗 Useful Links
-
-- [Apache Spark Documentation](https://spark.apache.org/docs/latest/)
-- [Scala Documentation](https://docs.scala-lang.org/)
-- [AWS EMR Guide](https://docs.aws.amazon.com/emr/)
-- [Wikipedia Dumps](https://dumps.wikimedia.org/)
-- [Project Documentation](./docs/)
-
----
-
-## ⭐ Star History
-
-If you find this project useful, please consider giving it a star! ⭐
-
-[![Star History Chart](https://api.star-history.com/svg?repos=yourusername/wikipedia-spark-analysis&type=Date)](https://star-history.com/#yourusername/wikipedia-spark-analysis&Date)
 
 ---
 
