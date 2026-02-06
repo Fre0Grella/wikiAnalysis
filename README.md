@@ -568,6 +568,21 @@ Arts        Charlie     4300000
 ```
 Format: `Category \t Username \t BytesContributed`
 
+### Visualizing Results
+
+**Generating Charts**
+
+A Python script is provided to generate comprehensive visualizations of the analysis results:
+```bash
+# Generate all charts from output data
+python scripts/chart_gen.py
+```
+**Requirements:**
+```bash
+pip install pandas matplotlib seaborn numpy
+```
+This creates `docs/wikipedia_analysis_complete.png` with 6 charts:
+![charts](docs/wikipedia_analysis_complete.png)
 ---
 ## 📁 Project Structure
 
