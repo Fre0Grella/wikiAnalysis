@@ -181,7 +181,6 @@ build/
 *.old
 *.orig
 *.rej
-*.zip
 *.tar
 *.tar.gz
 *.tgz
