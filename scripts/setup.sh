@@ -304,12 +304,12 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     print_info "Running: sbt clean compile package"
     print_warning "This may take several minutes..."
     
-    if sbt clean compile package; then
+    if sbt assembly; then
         print_success "Build completed successfully!"
         
         if [ -f target/scala-2.12/wikipedia-analysis_2.12-1.0.jar ]; then
-            JAR_SIZE=$(ls -lh target/scala-2.12/wikipedia-analysis_2.12-1.0.jar | awk '{print $5}')
-            print_success "JAR created: target/scala-2.12/wikipedia-analysis_2.12-1.0.jar ($JAR_SIZE)"
+            JAR_SIZE=$(ls -lh target/scala-2.12/WikipediaAnalytics-0.1.0.jar | awk '{print $5}')
+            print_success "JAR created: target/scala-2.12/WikipediaAnalytics-0.1.0.jar ($JAR_SIZE)"
         fi
     else
         print_error "Build failed. Check error messages above."
@@ -325,7 +325,7 @@ fi
 print_header "Step 6: Sample Data (Optional)"
 
 echo "Do you want to download a small sample dataset for testing?"
-echo "  Size: ~2-3 GB (takes 1-2 minutes)"
+echo "  Size: ~2-3 GB (takes 3-4 minutes)"
 echo ""
 read -p "Download sample data? (y/N): " -n 1 -r
 echo
