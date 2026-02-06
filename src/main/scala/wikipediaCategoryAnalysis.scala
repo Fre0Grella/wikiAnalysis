@@ -499,6 +499,7 @@ object wikipediaCategoryAnalysis {
     Logger.getLogger("org.apache.spark.storage.MemoryStore").setLevel(Level.ERROR)
     Logger.getLogger("org.apache.spark.storage.BlockManager").setLevel(Level.ERROR)
 
+    //UPDATE TO WHATEVER DUMP YOU DOWNLOADED
     val linktarget_path    = "dataset/categories_dump/enwiki-20251201-linktarget.sql.bz2"
     val categorylinks_path = "dataset/categories_dump/enwiki-20251201-categorylinks.sql.bz2"
     val page_path          = "dataset/categories_dump/enwiki-20251201-page.sql.bz2"

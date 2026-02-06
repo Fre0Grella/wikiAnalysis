@@ -2,9 +2,22 @@
 
 # Script to download Wikimedia history dumps for a specified wiki and date range.
 # Uses curl for downloading files in parallel.
+month=$(date +%m)
+year=$(date +%Y)
 
+# Remove leading zero for arithmetic
+month=$((10#$month))
+
+if [ "$month" -eq 1 ]; then
+    prev_month=12
+    prev_year=$((year - 1))
+else
+    prev_month=$((month - 1))
+    prev_year=$year
+fi
+prev_month=$(printf "%02d" $prev_month)
 # Default values
-VERSION="2025-11"
+VERSION="$prev_year-$prev_month"
 WIKI="enwiki"
 BASE_URL="https://dumps.wikimedia.org/other/mediawiki_history"
 OUTPUT_DIR="dataset/wikimedia_dumps"
