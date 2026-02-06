@@ -50,6 +50,9 @@ object wikipediaBusFactorAnalysis {
     val articleTopics = categories
       .map(_.split("\t"))
       .map(data => (data(0).toInt, data(1).toLong))
+      .collectAsMap()
+
+    val broadcastArticleTopics = sc.broadcast(articleTopics)
 
     // printf("Total Articles with Categories: %d\n", articleTopics.count())
 
@@ -71,9 +74,14 @@ object wikipediaBusFactorAnalysis {
           )
         )
       )
-      .join(articleTopics)
-      .map { case (pageId, ((title, user, bytesDiff), cats)) =>
-        (pageId, title, user, bytesDiff.toInt, decoder.categoriesFromMask(cats))
+      .map { case (pageId, (title, user, bytesDiff)) =>
+        (
+          pageId,
+          title,
+          user,
+          bytesDiff.toInt,
+          decoder.categoriesFromMask(broadcastArticleTopics.value.getOrElse(pageId, 0L))
+        )
       }
 
     val contributionPerUserPerCategory = filteredInput

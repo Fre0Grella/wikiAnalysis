@@ -17,7 +17,7 @@ show_help() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -v VERSION     Dump version (default: 2025-10)"
+    echo "  -v VERSION     Dump version (default: 2025-11)"
     echo "  -w WIKI        Wiki name (default: enwiki)"
     echo "  -d DIR         Download directory (default: dataset/wikimedia_dumps)"
     echo "  -s START_DATE  Start date YYYY-MM (default: 2001-01)"

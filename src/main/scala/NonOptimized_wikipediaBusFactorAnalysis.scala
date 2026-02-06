@@ -83,7 +83,6 @@ object NonOptimized_wikipediaBusFactorAnalysis {
       .mapValues { userBytes =>
         val totalBytes = userBytes.map(_._2).sum
 
-
         val allContributions = userBytes.toArray.sortBy(-_._2)
 
         // Keep only top contributors

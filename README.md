@@ -31,12 +31,12 @@ This project performs large-scale analysis on Wikipedia data (Up to 100+ GB comp
 1. **Category Classification**: Maps Wikipedia articles to root topic categories using an iterative label propagation algorithm
 2. **Bus Factor Analysis**: Calculates the "bus factor" for each topic category (minimum contributors needed for 50% of content)
 
-The implementation demonstrates advanced Spark optimization techniques including broadcast joins, strategic persistence, and efficient aggregation patterns, achieving **X% performance improvement** over baseline implementations.
+The implementation demonstrates advanced Spark optimization techniques including broadcast joins, strategic persistence, and efficient aggregation patterns, achieving more than **2,22x speedup** over baseline implementations.
 
 ### Key Metrics
 - **Used Dataset Size**: 37,5 GB compressed
-- **Processing Time**: ~X minutes (optimized) vs ~X minutes (baseline)
-- **Shuffle Reduction**: X% less data shuffled
+- **Processing Time**: ~79 minutes (optimized) vs >177 minutes (baseline)
+- **Shuffle Reduction**: 70% less data shuffled
 
 ---
 

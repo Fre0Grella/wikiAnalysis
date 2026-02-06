@@ -17,6 +17,7 @@ config
 # Large dataset files
 dataset/
 output/
+output_aws/
 output_baseline/
 checkpoints/
 checkpoints_baseline/

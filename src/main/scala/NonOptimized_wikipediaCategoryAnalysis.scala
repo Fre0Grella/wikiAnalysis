@@ -261,7 +261,7 @@ object NonOptimized_wikipediaCategoryAnalysis {
   // 3. Uses groupByKey instead of reduceByKey where possible
   // 4. NO coalesce to reduce partitions
   // 5. Keeps checkpointing (necessary for lineage management)
-  @SuppressWarnings(Array("org.wartremover.warts.While","org.wartremover.warts.IterableOps"))
+  @SuppressWarnings(Array("org.wartremover.warts.While", "org.wartremover.warts.IterableOps"))
   private def buildPageToRootsMap_baseline(
     K: Int, // Max number of roots per article/category
     linkTargetRDD: RDD[LinkTarget],
@@ -317,7 +317,6 @@ object NonOptimized_wikipediaCategoryAnalysis {
       .join(lt)
       .map { case (_, ((page_id, targetId), page_LtId)) => (targetId, (page_id, page_LtId)) }
 
-
     val skellyCount = skeleton.count()
     printf("Category Skeleton has %d edges.\n", skellyCount)
 
@@ -340,7 +339,6 @@ object NonOptimized_wikipediaCategoryAnalysis {
         .map { case (_, ((_, parentMask), (childPageId, childLtId))) =>
           (childLtId, (childPageId, parentMask))
         }
-
 
       val updated = propagated
         .leftOuterJoin(allAssignments)
@@ -389,7 +387,6 @@ object NonOptimized_wikipediaCategoryAnalysis {
     }
 
     printf("Completed a total of %d categories of %d total.\n", allAssignments.count(), skellyCount)
-
 
     println("Mapping articles to categories (using regular join - expensive)...")
 
