@@ -301,21 +301,21 @@ read -p "Build project? (y/N): " -n 1 -r
 echo
 
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    print_info "Running: sbt clean compile package"
+    print_info "Running: sbt assembly"
     print_warning "This may take several minutes..."
-    
+
     if sbt assembly; then
         print_success "Build completed successfully!"
-        
+
         if [ -f target/scala-2.12/wikipedia-analysis_2.12-1.0.jar ]; then
             JAR_SIZE=$(ls -lh target/scala-2.12/WikipediaAnalytics-0.1.0.jar | awk '{print $5}')
             print_success "JAR created: target/scala-2.12/WikipediaAnalytics-0.1.0.jar ($JAR_SIZE)"
         fi
     else
-        print_error "Build failed. Check error messages above."
+        print_error "Build failed. If this happen try running sbt assembly after the setup is complete."
     fi
 else
-    print_info "Skipping build. You can build later with: sbt package"
+    print_info "Skipping build. You can build later with: sbt assembly"
 fi
 
 # ==========================================
@@ -334,7 +334,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     print_info "Downloading sample Wikipedia data..."
 
     if [ -f scripts/download_wiki_history.sh ]; then
-        sh scripts/download_wiki_history.sh -v 2025-11 -s 2025-11 -e 2025-11
+        sh scripts/download_wiki_history.sh -s 2025-11 -e 2025-11
         sh scripts/download_categories.sh
         print_success "Sample data downloaded to dataset/"
     else
@@ -377,7 +377,7 @@ else
     SETUP_ITEMS+=("${YELLOW}○${NC} Project not built yet")
 fi
 
-if [ -d dataset ] && [ "$(ls -A dataset" ]; then
+if [ -d dataset ] && [ "$(ls -A dataset)" ]; then
     SETUP_ITEMS+=("${GREEN}✓${NC} Sample data downloaded")
 else
     SETUP_ITEMS+=("${YELLOW}○${NC} No sample data")
@@ -387,32 +387,5 @@ fi
 for item in "${SETUP_ITEMS[@]}"; do
     echo -e "$item"
 done
-
-echo ""
-echo "─────────────────────────────────────────────────────────────"
-echo ""
-echo "Next Steps:"
-echo ""
-echo "  1. Review and edit configuration:"
-echo "     ${BLUE}src/main/scala/utils/Config.scala${NC}"
-echo ""
-echo "  2. Download full datasets (47+ GB):"
-echo "     ${BLUE}./scripts/download_wiki_history.sh -s 2024-01 -e 2024-12${NC}"
-echo "     ${BLUE}./scripts/download_categories.sh${NC}"
-echo ""
-echo "  3. Test locally with sample data:"
-echo "     ${BLUE}spark-submit --class JobLauncher --master local[*] \\${NC}"
-echo "     ${BLUE}  target/scala-2.12/wikipedia-analysis_2.12-1.0.jar \\${NC}"
-echo "     ${BLUE}  local cat overwrite optimized${NC}"
-echo ""
-echo "  4. Deploy to AWS EMR:"
-echo "     ${BLUE}See README.md 'Running on AWS EMR' section${NC}"
-echo ""
-echo "  5. Read documentation:"
-echo "     ${BLUE}README.md${NC} - Complete guide"
-echo "     ${BLUE}docs/PERFORMANCE_ANALYSIS.md${NC} - Performance metrics"
-echo ""
-echo "For help: ${BLUE}https://github.com/yourusername/wikipedia-spark-analysis${NC}"
-echo ""
 
 print_success "Setup complete! Happy analyzing!"
